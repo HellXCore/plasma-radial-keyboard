@@ -16,7 +16,7 @@
 
 #define DEFAULT_LW 1100
 #define DEFAULT_LH 500
-#define INOTIFY_BUFSZ ((sizeof(struct inotify_event) + NAME_MAX + 1) * 8)
+#define INOTIFY_BUFSZ ((sizeof(struct inotify_event) + NAME_MAX + 1) * 16)
 
 enum {
     BG_SOLID = 0,
@@ -25,7 +25,6 @@ enum {
 };
 
 /* ======================= Wayland Background Blur Protocols ======================= */
-/* Поддержка KDE Plasma 6.8+ (ext_background_effect_manager_v1) и fallback (org_kde_kwin_blur_manager) */
 struct ext_background_effect_manager_v1;
 struct ext_background_effect_surface_v1;
 struct org_kde_kwin_blur_manager;
@@ -235,12 +234,16 @@ typedef struct {
     int show_a, show_b;
     int chord_a, chord_b, chord_fired;
     int ino_input, wd_input;
-    int ino_cfg, wd_cfg;
+    int ino_cfg, wd_cfg, wd_radialkb;
+    int cfg_dirty;
+    int64_t cfg_reload_at;
     int pads_dirty;
     int64_t pads_rescan_at;
     char cfg_dir[PATH_MAX];
-    char kwinrc[PATH_MAX + 32];
-    char kdeglobals[PATH_MAX + 32];
+    char radialkb_dir[PATH_MAX + 64];
+    char layout_path[PATH_MAX + 256];
+    char kwinrc[PATH_MAX + 64];
+    char kdeglobals[PATH_MAX + 64];
     int cfg_has_error;
     char cfg_err_msg[256];
     Theme th;
@@ -414,7 +417,7 @@ static void theme_load(App *a)
 
     Theme *t = &a->th;
 
-    char cfg_theme[PATH_MAX + 32];
+    char cfg_theme[PATH_MAX + 64];
     snprintf(cfg_theme, sizeof cfg_theme, "%s/radialkb/config.ini", a->cfg_dir);
     char val[64];
     if (ini_get(cfg_theme, "theme", "background_style", val, sizeof val)) {
@@ -552,7 +555,7 @@ static int parse_combo(const char *spec, int *a, int *b)
 
 static void radial_config_load(App *a, char *layout_path, size_t n)
 {
-    char path[PATH_MAX + 32];
+    char path[PATH_MAX + 64];
     snprintf(path, sizeof path, "%s/radialkb/config.ini", a->cfg_dir);
     char v[128];
 
@@ -585,8 +588,10 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
         }
     }
 
-    if (ini_get(path, "general", "layout", v, sizeof v))
-        snprintf(layout_path, n, "%s", v);
+    if (ini_get(path, "general", "layout", v, sizeof v)) {
+        if (v[0] == '/') snprintf(layout_path, n, "%s", v);
+        else snprintf(layout_path, n, "%s/radialkb/%.128s", a->cfg_dir, v);
+    }
 
     if (ini_get(path, "controls", "backspace", v, sizeof v))
         if (!parse_btn_list(v, a->kb.binds.backspace, &a->kb.binds.n_backspace)) a->cfg_has_error = 1;
@@ -766,6 +771,38 @@ static void text_c(cairo_t *cr, App *a, const char *s, double x, double y, doubl
     cairo_new_path(cr);
 }
 
+/* Выравнивание одиночных символов и знаков пунктуации по чернильным границам (Optical Center) */
+static void draw_optical_text(cairo_t *cr, App *a, const char *s, double cx, double cy,
+                              double pt_size, const double *col, int bold, int optical_center)
+{
+    PangoLayout *l = pango_cairo_create_layout(cr);
+    char fdesc[192];
+    snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, bold ? "Bold" : "Regular");
+    PangoFontDescription *fd = pango_font_description_from_string(fdesc);
+    pango_font_description_set_absolute_size(fd, pt_size * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
+    pango_layout_set_font_description(l, fd);
+    pango_layout_set_text(l, s, -1);
+
+    PangoRectangle ink_rect, log_rect;
+    pango_layout_get_pixel_extents(l, &ink_rect, &log_rect);
+
+    double draw_x, draw_y;
+    if (optical_center && ink_rect.width > 0 && ink_rect.height > 0) {
+        draw_x = cx - (ink_rect.x + ink_rect.width / 2.0);
+        draw_y = cy - (ink_rect.y + ink_rect.height / 2.0);
+    } else {
+        draw_x = cx - log_rect.width / 2.0;
+        draw_y = cy - log_rect.height / 2.0;
+    }
+
+    cairo_rgba(cr, col);
+    cairo_move_to(cr, draw_x, draw_y);
+    pango_cairo_show_layout(cr, l);
+    pango_font_description_free(fd);
+    g_object_unref(l);
+    cairo_new_path(cr);
+}
+
 static void text_fit(cairo_t *cr, App *a, const char *s, double x, double y, double maxw, double px,
                      const double *col, int bold)
 {
@@ -777,7 +814,7 @@ static void text_fit(cairo_t *cr, App *a, const char *s, double x, double y, dou
     pango_layout_set_font_description(l, fd);
     pango_layout_set_width(l, (int)(maxw * PANGO_SCALE));
     pango_layout_set_alignment(l, PANGO_ALIGN_CENTER);
-    pango_layout_set_wrap(l, PANGO_WRAP_WORD_CHAR);
+    pango_layout_set_spacing(l, (int)(3.0 * a->ui.ui_scale * PANGO_SCALE));
     pango_layout_set_text(l, s, -1);
     int w, h; pango_layout_get_pixel_size(l, &w, &h);
     cairo_rgba(cr, col);
@@ -861,7 +898,7 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
     const Layout *Ly = &k->lay[k->cur];
     int layer = kb_layer(k);
     const Group *grp = &Ly->g[layer][k->group];
-    double maxw = (R - r0) * 0.74;
+    double maxw = (R - r0) * 0.95;
 
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
 
@@ -891,28 +928,103 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
             cairo_stroke(cr);
         }
 
-        double x, y; sector_pos(cx, cy, (R + r0) / 2.0, s, &x, &y);
+        /* Оптимальный оптический радиус в широкой части сектора */
+        double r_text = r0 + (R - r0) * 0.54;
+        double x, y; sector_pos(cx, cy, r_text, s, &x, &y);
         const double *text_col = hot ? th->accent_fg : th->fg;
 
         if (is_left) {
-            char buf[96] = "";
             const Group *g = &Ly->g[layer][s];
-            for (int i = 0; i < 4; i++) {
-                if (i) strncat(buf, " ", sizeof buf - strlen(buf) - 1);
-                strncat(buf, g->t[TOK2SLOT[i]], sizeof buf - strlen(buf) - 1);
+            const char *tokens[NSLOTS];
+            int n_tok = 0;
+            for (int i = 0; i < NSLOTS; i++) {
+                const char *t = g->t[TOK2SLOT[i]];
+                if (t && t[0]) tokens[n_tok++] = t;
             }
-            int extra = 0;
-            for (int i = 4; i < NSLOTS; i++) if (g->t[TOK2SLOT[i]][0]) extra = 1;
-            if (extra) {
-                strncat(buf, "\n", sizeof buf - strlen(buf) - 1);
-                for (int i = 4; i < NSLOTS; i++) {
-                    if (i > 4) strncat(buf, " ", sizeof buf - strlen(buf) - 1);
-                    strncat(buf, g->t[TOK2SLOT[i]], sizeof buf - strlen(buf) - 1);
+
+            if (n_tok > 0) {
+                char line1[64] = "";
+                char line2[64] = "";
+
+                if (n_tok <= 3) {
+                    for (int i = 0; i < n_tok; i++) {
+                        if (i > 0) strncat(line1, "  ", sizeof(line1) - strlen(line1) - 1);
+                        strncat(line1, tokens[i], sizeof(line1) - strlen(line1) - 1);
+                    }
+                } else if (n_tok == 4) {
+                    char test_line[64] = "";
+                    for (int i = 0; i < 4; i++) {
+                        if (i > 0) strncat(test_line, " ", sizeof(test_line) - strlen(test_line) - 1);
+                        strncat(test_line, tokens[i], sizeof(test_line) - strlen(test_line) - 1);
+                    }
+
+                    PangoLayout *tl = pango_cairo_create_layout(cr);
+                    char fdesc[192];
+                    snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, hot ? "Bold" : "Regular");
+                    PangoFontDescription *tfd = pango_font_description_from_string(fdesc);
+                    pango_font_description_set_absolute_size(tfd, 13.5 * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
+                    pango_layout_set_font_description(tl, tfd);
+                    pango_layout_set_text(tl, test_line, -1);
+                    int tw, th_h; pango_layout_get_pixel_size(tl, &tw, &th_h);
+                    pango_font_description_free(tfd); g_object_unref(tl);
+
+                    if (tw <= maxw * a->ui.ui_scale * 0.95) {
+                        snprintf(line1, sizeof(line1), "%s", test_line);
+                    } else {
+                        snprintf(line1, sizeof(line1), "%s  %s", tokens[0], tokens[1]);
+                        snprintf(line2, sizeof(line2), "%s  %s", tokens[2], tokens[3]);
+                    }
+                } else if (n_tok == 5) {
+                    snprintf(line1, sizeof(line1), "%s %s %s", tokens[0], tokens[1], tokens[2]);
+                    snprintf(line2, sizeof(line2), "%s %s", tokens[3], tokens[4]);
+                } else if (n_tok == 6) {
+                    snprintf(line1, sizeof(line1), "%s %s %s", tokens[0], tokens[1], tokens[2]);
+                    snprintf(line2, sizeof(line2), "%s %s %s", tokens[3], tokens[4], tokens[5]);
+                } else if (n_tok == 7) {
+                    snprintf(line1, sizeof(line1), "%s %s %s %s", tokens[0], tokens[1], tokens[2], tokens[3]);
+                    snprintf(line2, sizeof(line2), "%s %s %s", tokens[4], tokens[5], tokens[6]);
+                } else {
+                    snprintf(line1, sizeof(line1), "%s %s %s %s", tokens[0], tokens[1], tokens[2], tokens[3]);
+                    snprintf(line2, sizeof(line2), "%s %s %s %s", tokens[4], tokens[5], tokens[6], tokens[7]);
                 }
+
+                char full_buf[128];
+                if (line2[0]) {
+                    snprintf(full_buf, sizeof(full_buf), "%s\n%s", line1, line2);
+                } else {
+                    snprintf(full_buf, sizeof(full_buf), "%s", line1);
+                }
+
+                double pt = (n_tok >= 7) ? 12.0 : ((n_tok >= 5) ? 13.0 : 14.5);
+                text_fit(cr, a, full_buf, x, y, maxw * 1.15, pt, text_col, hot);
             }
-            text_fit(cr, a, buf, x, y, maxw, 14.0, text_col, hot);
         } else if (grp->t[s][0]) {
-            text_fit(cr, a, grp->t[s], x, y, maxw, strlen(grp->t[s]) > 2 ? 18.0 : 26.0, text_col, 1);
+            const char *tok = grp->t[s];
+            double badge_r = 17.5 * a->ui.ui_scale;
+
+            cairo_new_path(cr);
+            cairo_arc(cr, x, y, badge_r, 0, 2 * M_PI);
+            if (hot) {
+                cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, th->dark ? 0.28 : 0.40);
+                cairo_fill_preserve(cr);
+                cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.85);
+                cairo_set_line_width(cr, 1.8 * a->ui.ui_scale);
+                cairo_stroke(cr);
+            } else {
+                cairo_rgba(cr, th->wedge_empty);
+                cairo_fill_preserve(cr);
+                cairo_set_source_rgba(cr, th->fg[0], th->fg[1], th->fg[2], th->dark ? 0.16 : 0.22);
+                cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
+                cairo_stroke(cr);
+            }
+
+            double pt = (strlen(tok) > 2) ? 14.0 : (strlen(tok) == 1 ? 22.0 : 18.0);
+            draw_optical_text(cr, a, tok, x, y, pt, text_col, 1, 1);
+        } else {
+            cairo_new_path(cr);
+            cairo_arc(cr, x, y, 3.0 * a->ui.ui_scale, 0, 2 * M_PI);
+            cairo_set_source_rgba(cr, th->fg[0], th->fg[1], th->fg[2], 0.16);
+            cairo_fill(cr);
         }
     }
 
@@ -929,14 +1041,13 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
     cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
     cairo_stroke(cr);
 
-    /* Стик: исправлена привязка осей правого стика (sx = k->rx, sy = k->ry) */
+    /* Стик */
     double sx = is_left ? k->lx : k->rx;
     double sy = is_left ? k->ly : k->ry;
     double max_travel = r0 - 18.0 * a->ui.ui_scale;
     double puck_x = cx + sx * max_travel;
     double puck_y = cy + sy * max_travel;
 
-    /* Трейс-линия отклонения стика */
     if (hypotf((float)sx, (float)sy) > 0.15f) {
         cairo_new_path(cr);
         cairo_move_to(cr, cx, cy);
@@ -946,7 +1057,6 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
         cairo_stroke(cr);
     }
 
-    /* Шляпка стика */
     cairo_new_path(cr);
     cairo_arc(cr, puck_x, puck_y, 9.0 * a->ui.ui_scale, 0, 2 * M_PI);
     cairo_rgba(cr, th->wedge);
@@ -981,7 +1091,6 @@ static void draw(App *a, cairo_t *cr)
     cairo_close_path(cr);
 
     if (th->bg_style == BG_ACRYLIC) {
-        /* Акриловый градиент глубины матового стекла */
         cairo_pattern_t *pat = cairo_pattern_create_linear(0, 0, 0, lh);
         double top_col[4] = {
             th->bg[0] + (th->dark ? 0.08 : -0.04),
@@ -995,12 +1104,10 @@ static void draw(App *a, cairo_t *cr)
         cairo_fill_preserve(cr);
         cairo_pattern_destroy(pat);
 
-        /* Основная окантовка панели */
         cairo_rgba(cr, th->border);
         cairo_set_line_width(cr, 1.2 * a->ui.ui_scale);
         cairo_stroke(cr);
 
-        /* Highlight-контур: стеклянный световой отблеск по верхнему периметру */
         cairo_new_path(cr);
         cairo_arc(cr, rr + 1.0, rr + 1.0, rr, M_PI, 1.5 * M_PI);
         cairo_line_to(cr, lw - rr - 1.0, 1.0);
@@ -1009,7 +1116,6 @@ static void draw(App *a, cairo_t *cr)
         cairo_set_line_width(cr, 1.2 * a->ui.ui_scale);
         cairo_stroke(cr);
     } else {
-        /* Translucent (простая полупрозрачность без блюра) либо Solid (сплошной) */
         cairo_rgba(cr, th->bg);
         cairo_fill_preserve(cr);
         cairo_rgba(cr, th->border);
@@ -1043,21 +1149,40 @@ static void draw(App *a, cairo_t *cr)
         cairo_fill(cr);
     }
 
+    /* Центральная статусная плашка */
+    double card_w = 200.0 * a->ui.ui_scale;
+    double card_h = 78.0 * a->ui.ui_scale;
+    double card_x = lw / 2.0 - card_w / 2.0;
+    double card_y = cy - card_h / 2.0;
+    double card_r = 14.0 * a->ui.ui_scale;
+
+    cairo_new_path(cr);
+    cairo_arc(cr, card_x + card_w - card_r, card_y + card_r, card_r, -M_PI / 2, 0);
+    cairo_arc(cr, card_x + card_w - card_r, card_y + card_h - card_r, card_r, 0, M_PI / 2);
+    cairo_arc(cr, card_x + card_r, card_y + card_h - card_r, card_r, M_PI / 2, M_PI);
+    cairo_arc(cr, card_x + card_r, card_y + card_r, card_r, M_PI, 1.5 * M_PI);
+    cairo_close_path(cr);
+
+    cairo_rgba(cr, th->wedge);
+    cairo_fill_preserve(cr);
+    cairo_rgba(cr, th->border);
+    cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
+    cairo_stroke(cr);
+
     char lang[16];
     snprintf(lang, sizeof lang, "%s", k->lay[k->cur].name);
     for (char *c = lang; *c; c++) *c = (char)toupper((unsigned char)*c);
 
     char st[128];
     snprintf(st, sizeof st, "%s  •  %s", lang, k->sym ? "123" : (k->shift ? "ABC" : "abc"));
-    text_c(cr, a, st, lw / 2.0, cy - 32 * a->ui.ui_scale, 20.0, th->fg, 1);
+    text_c(cr, a, st, lw / 2.0, card_y + 22.0 * a->ui.ui_scale, 16.0, th->fg, 1);
 
     if (k->last[0]) {
         char typed_preview[32];
         snprintf(typed_preview, sizeof typed_preview, "→ %s", k->last);
-        text_c(cr, a, typed_preview, lw / 2.0, cy, 26.0, th->accent, 1);
+        text_c(cr, a, typed_preview, lw / 2.0, card_y + 52.0 * a->ui.ui_scale, 22.0, th->accent, 1);
     } else {
-        text_fit(cr, a, "Select group with L-Stick\nFlick & release R-Stick to type",
-                 lw / 2.0, cy + 6.0 * a->ui.ui_scale, 260 * a->ui.ui_scale, 12.0, th->fg_dim, 0);
+        text_c(cr, a, "Flick R-Stick to type", lw / 2.0, card_y + 52.0 * a->ui.ui_scale, 11.5, th->fg_dim, 0);
     }
 
     double badge_h = 24.0 * a->ui.ui_scale;
@@ -1384,6 +1509,21 @@ static void drain_inotify(int fd)
     while (read(fd, buf, sizeof buf) > 0) {}
 }
 
+static void setup_cfg_watches(App *a)
+{
+    if (a->ino_cfg < 0) {
+        a->ino_cfg = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (a->ino_cfg < 0) return;
+    }
+    uint32_t mask = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_MODIFY | IN_ATTRIB | IN_DELETE;
+    if (a->wd_cfg < 0) {
+        a->wd_cfg = inotify_add_watch(a->ino_cfg, a->cfg_dir, mask);
+    }
+    if (a->wd_radialkb < 0) {
+        a->wd_radialkb = inotify_add_watch(a->ino_cfg, a->radialkb_dir, mask);
+    }
+}
+
 static int check_show_combo(App *a, int code, int down)
 {
     if (a->show_b < 0) {
@@ -1411,7 +1551,8 @@ int main(int argc, char **argv)
     setlocale(LC_CTYPE, "C.UTF-8");
     setlocale(LC_NUMERIC, "C");
     A.scale = 1; A.grab_pref = 1; A.running = 1;
-    A.ino_input = A.wd_input = A.ino_cfg = A.wd_cfg = -1;
+    A.ino_input = A.wd_input = A.ino_cfg = A.wd_cfg = A.wd_radialkb = -1;
+    A.cfg_dirty = 0; A.cfg_reload_at = 0;
     A.show_a = BTN_SELECT; A.show_b = BTN_START;
     A.invoke = INVOKE_SMART;
 
@@ -1421,10 +1562,10 @@ int main(int argc, char **argv)
     else snprintf(A.cfg_dir, sizeof A.cfg_dir, ".");
     snprintf(A.kwinrc, sizeof A.kwinrc, "%s/kwinrc", A.cfg_dir);
     snprintf(A.kdeglobals, sizeof A.kdeglobals, "%s/kdeglobals", A.cfg_dir);
+    snprintf(A.radialkb_dir, sizeof A.radialkb_dir, "%s/radialkb", A.cfg_dir);
+    snprintf(A.layout_path, sizeof A.layout_path, "%s/radialkb/layouts.conf", A.cfg_dir);
 
-    char layout_path[PATH_MAX + 32] = "";
-    snprintf(layout_path, sizeof layout_path, "%s/radialkb/layouts.conf", A.cfg_dir);
-    radial_config_load(&A, layout_path, sizeof layout_path);
+    radial_config_load(&A, A.layout_path, sizeof A.layout_path);
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-grab")) A.grab_pref = 0;
@@ -1432,7 +1573,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--smart")) A.invoke = INVOKE_SMART;
         else if (!strcmp(argv[i], "--auto")) A.invoke = INVOKE_AUTO;
         else if (!strcmp(argv[i], "--layout") && i + 1 < argc) {
-            snprintf(layout_path, sizeof layout_path, "%s", argv[++i]);
+            snprintf(A.layout_path, sizeof A.layout_path, "%s", argv[++i]);
         } else {
             fprintf(stderr, "usage: %s [--no-grab] [--manual|--smart|--auto] [--layout FILE]\n", argv[0]);
             return 2;
@@ -1446,13 +1587,12 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < MAXPADS; i++) A.pads[i].fd = -1;
     A.kb.ud = &A; A.kb.text = cb_text; A.kb.key = cb_key;
-    kb_load_layouts(&A.kb, layout_path[0] ? layout_path : NULL);
+    kb_load_layouts(&A.kb, A.layout_path[0] ? A.layout_path : NULL);
     kb_reset_input(&A.kb);
 
     watch_dir(&A.ino_input, &A.wd_input, "/dev/input",
               IN_CREATE | IN_DELETE | IN_ATTRIB | IN_MOVED_TO);
-    watch_dir(&A.ino_cfg, &A.wd_cfg, A.cfg_dir,
-              IN_CREATE | IN_MODIFY | IN_MOVED_TO | IN_ATTRIB);
+    setup_cfg_watches(&A);
 
     pads_resync(&A);
 
@@ -1507,6 +1647,12 @@ int main(int argc, char **argv)
             if (wait < 0) wait = 0;
             if (timeout < 0 || wait < timeout) timeout = wait;
         }
+        if (A.cfg_dirty) {
+            int wait = (int)(A.cfg_reload_at - now);
+            if (wait < 0) wait = 0;
+            if (timeout < 0 || wait < timeout) timeout = wait;
+        }
+
         int r = poll(fds, (nfds_t)nf, timeout);
         if (r < 0 && errno != EINTR) { wl_display_cancel_read(A.dpy); break; }
         if (r > 0 && (fds[0].revents & POLLIN)) {
@@ -1521,9 +1667,24 @@ int main(int argc, char **argv)
         }
         if (r > 0 && i_cfg >= 0 && (fds[i_cfg].revents & POLLIN)) {
             drain_inotify(A.ino_cfg);
+            setup_cfg_watches(&A);
+            A.cfg_dirty = 1;
+            A.cfg_reload_at = now_ms() + 80;
+        }
+
+        if (A.pads_dirty && now_ms() >= A.pads_rescan_at) {
+            A.pads_dirty = 0;
+            pads_resync(&A);
+            apply_visibility(&A);
+        }
+
+        /* Применение горячей подгрузки конфига после дебаунса */
+        if (A.cfg_dirty && now_ms() >= A.cfg_reload_at) {
+            A.cfg_dirty = 0;
             plasma_mode_load(&A);
             theme_load(&A);
-            radial_config_load(&A, layout_path, sizeof layout_path);
+            radial_config_load(&A, A.layout_path, sizeof A.layout_path);
+            kb_load_layouts(&A.kb, A.layout_path[0] ? A.layout_path : NULL);
             update_surface_blur(&A);
             A.kb.dirty = 1;
 
@@ -1533,13 +1694,9 @@ int main(int argc, char **argv)
                 panel_show(&A);
             } else {
                 apply_visibility(&A);
+                if (A.visible) app_redraw(&A);
             }
-        }
-
-        if (A.pads_dirty && now_ms() >= A.pads_rescan_at) {
-            A.pads_dirty = 0;
-            pads_resync(&A);
-            apply_visibility(&A);
+            fprintf(stderr, "radialkb: configuration reloaded successfully\n");
         }
 
         if (r > 0) {

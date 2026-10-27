@@ -528,10 +528,11 @@ static int kb_load_layouts(Kb *k, const char *path)
             fclose(f);
         }
     }
+    int old_cur = k->cur;
     k->nlay = buf ? parse_layouts(buf, k->lay, MAXLANG) : 0;
     free(buf);
     if (k->nlay == 0) k->nlay = parse_layouts(DEFAULT_LAYOUTS, k->lay, MAXLANG);
-    k->cur = 0;
+    k->cur = (old_cur < k->nlay) ? old_cur : 0;
     return k->nlay;
 }
 
