@@ -87,6 +87,11 @@ int main(void) {
     assert(!vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_MANUAL, 0, 0));
     assert( vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_MANUAL, 1, 0));
 
+    /* Smart mode ignores unactivated field (im_active == 0) */
+    assert(!vis_want(0, 1, PLASMA_VK_ALWAYS, INVOKE_SMART, 0, 0));
+    assert(!vis_want(0, 1, PLASMA_VK_TOUCH,  INVOKE_SMART, 0, 0));
+    assert(!vis_want(0, 1, PLASMA_VK_NEVER,  INVOKE_SMART, 0, 0));
+
     /* Smart mode opens automatically when input is focused, unless user explicitly hid it */
     assert( vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_SMART, 0, 0));
     assert( vis_want(1, 1, PLASMA_VK_TOUCH,  INVOKE_SMART, 0, 0));

@@ -53,6 +53,13 @@ typedef struct {
     struct zwp_input_method_context_v1 *ctx; uint32_t serial;
     int scale, buf_scale;
     Buf bufs[2]; int bw, bh;
+    int field_active;
+    int field_has_surrounding;
+    uint32_t cursor_pos;
+    uint32_t anchor_pos;
+    uint32_t content_hint;
+    uint32_t content_purpose;
+    char surrounding[512];
     int visible;
     int mapped;
     Kb kb; Pad pads[MAXPADS]; int npads;
@@ -718,7 +725,7 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
     cairo_stroke(cr);
 
     /* Стик */
-    double sx = is_left ? k->lx : k->rx;
+    double sx = is_left ? k->lx : k->ry;
     double sy = is_left ? k->ly : k->ry;
     double max_travel = r0 - 18.0 * a->ui.ui_scale;
     double puck_x = cx + sx * max_travel;
@@ -984,9 +991,17 @@ static void panel_hide(App *a)
     if (a->dpy) wl_display_flush(a->dpy);
 }
 
+static inline int is_input_active(const App *a)
+{
+    if (!a->ctx) return 0;
+    if (a->user_shown) return 1;
+    return a->field_active;
+}
+
 static void apply_visibility(App *a)
 {
-    int want = vis_want(a->ctx != NULL, a->npads > 0, a->plasma_mode,
+    int im_active = is_input_active(a);
+    int want = vis_want(im_active, a->npads > 0, a->plasma_mode,
                         a->invoke, a->user_shown, a->user_hidden);
     if (want && !a->visible) panel_show(a);
     else if (!want && a->visible) panel_hide(a);
@@ -1013,14 +1028,52 @@ static void hide_panel(App *a)
 
 /* ======================= input method protocol ======================= */
 static void ctx_surrounding(void *d, struct zwp_input_method_context_v1 *c, const char *t, uint32_t cu, uint32_t an)
-{ (void)d; (void)c; (void)t; (void)cu; (void)an; }
-static void ctx_reset(void *d, struct zwp_input_method_context_v1 *c) { (void)d; (void)c; }
+{
+    (void)c;
+    App *a = d;
+    a->field_has_surrounding = 1;
+    a->cursor_pos = cu;
+    a->anchor_pos = an;
+    if (t) {
+        snprintf(a->surrounding, sizeof(a->surrounding), "%s", t);
+    } else {
+        a->surrounding[0] = '\0';
+    }
+    a->field_active = 1;
+    /* При явной активации курсора в поле ввода сбрасываем ручное скрытие */
+    a->user_hidden = 0;
+    apply_visibility(a);
+}
+
+static void ctx_reset(void *d, struct zwp_input_method_context_v1 *c)
+{
+    (void)c;
+    App *a = d;
+    a->field_has_surrounding = 0;
+}
+
 static void ctx_content_type(void *d, struct zwp_input_method_context_v1 *c, uint32_t h, uint32_t p)
-{ (void)d; (void)c; (void)h; (void)p; }
+{
+    (void)c;
+    App *a = d;
+    a->content_hint = h;
+    a->content_purpose = p;
+    a->field_active = 1;
+}
+
 static void ctx_invoke(void *d, struct zwp_input_method_context_v1 *c, uint32_t b, uint32_t i)
 { (void)d; (void)c; (void)b; (void)i; }
+
 static void ctx_commit_state(void *d, struct zwp_input_method_context_v1 *c, uint32_t serial)
-{ (void)c; ((App *)d)->serial = serial; }
+{
+    (void)c;
+    App *a = d;
+    a->serial = serial;
+    if (a->field_active) {
+        apply_visibility(a);
+    }
+}
+
 static void ctx_pref_lang(void *d, struct zwp_input_method_context_v1 *c, const char *l)
 { (void)d; (void)c; (void)l; }
 
@@ -1033,6 +1086,9 @@ static void im_activate(void *d, struct zwp_input_method_v1 *im, struct zwp_inpu
     (void)im; App *a = d;
     if (a->ctx) zwp_input_method_context_v1_destroy(a->ctx);
     a->ctx = ctx; a->serial = 0;
+    a->field_active = 0;
+    a->field_has_surrounding = 0;
+    a->surrounding[0] = '\0';
     zwp_input_method_context_v1_add_listener(ctx, &ctx_listener, a);
     kb_reset_input(&a->kb);
     a->user_hidden = 0;
@@ -1049,6 +1105,8 @@ static void im_deactivate(void *d, struct zwp_input_method_v1 *im, struct zwp_in
         zwp_input_method_context_v1_destroy(ctx);
         a->ctx = NULL;
     }
+    a->field_active = 0;
+    a->field_has_surrounding = 0;
     a->user_shown = 0;
     a->user_hidden = 0;
     panel_hide(a);
