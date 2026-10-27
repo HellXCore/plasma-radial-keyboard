@@ -268,7 +268,6 @@ static int pad_id_wanted(uint16_t vendor, uint16_t product, const char *name)
     return pad_name_wanted(name);
 }
 
-/* Проверка: зажата ли сейчас физически какая-либо клавиша на устройстве */
 static int pad_any_key_pressed(int fd)
 {
     if (fd < 0) return 0;
@@ -280,7 +279,6 @@ static int pad_any_key_pressed(int fd)
     return 0;
 }
 
-/* Безопасное применение захвата: предотвращает зависание Super/кнопок */
 static int pad_set_grab_safe(Pad *p, int grab)
 {
     if (p->fd < 0) return 0;
@@ -306,13 +304,13 @@ static int pad_set_grab_safe(Pad *p, int grab)
     return 0;
 }
 
-/* Логика видимости */
+/* Логика видимости клавиатуры */
 static inline int vis_want(int im_active, int has_pad, int plasma_mode,
                            int invoke_mode, int user_shown, int user_hidden)
 {
     if (!im_active || !has_pad || user_hidden) return 0;
     if (invoke_mode == INVOKE_MANUAL) return user_shown;
-    if (invoke_mode == INVOKE_SMART) return user_shown;
+    if (invoke_mode == INVOKE_SMART) return 1;
     if (plasma_mode != PLASMA_VK_ALWAYS) return user_shown;
     return 1;
 }

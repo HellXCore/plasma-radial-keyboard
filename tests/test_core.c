@@ -82,10 +82,16 @@ int main(void) {
     assert(!vis_want(1, 1, PLASMA_VK_TOUCH, INVOKE_AUTO, 0, 0));
     assert( vis_want(1, 1, PLASMA_VK_TOUCH, INVOKE_AUTO, 1, 0));
     assert( vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_AUTO, 0, 0));
+
+    /* Manual mode requires user_shown */
     assert(!vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_MANUAL, 0, 0));
     assert( vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_MANUAL, 1, 0));
-    assert(!vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_SMART, 0, 0));
-    assert( vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_SMART, 1, 0));
+
+    /* Smart mode opens automatically when input is focused, unless user explicitly hid it */
+    assert( vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_SMART, 0, 0));
+    assert( vis_want(1, 1, PLASMA_VK_TOUCH,  INVOKE_SMART, 0, 0));
+    assert( vis_want(1, 1, PLASMA_VK_NEVER,  INVOKE_SMART, 0, 0));
+    assert(!vis_want(1, 1, PLASMA_VK_ALWAYS, INVOKE_SMART, 0, 1));
 
     /* Strict input armed */
     assert(!input_armed_strict(1, 0, 1));
