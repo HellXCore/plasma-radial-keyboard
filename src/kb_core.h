@@ -12,8 +12,6 @@
 #include <wctype.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <errno.h>
-#include <glob.h>
 #include <sys/ioctl.h>
 #include <linux/input.h>
 

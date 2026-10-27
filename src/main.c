@@ -1,7 +1,8 @@
 /* plasma-radial-keyboard - dual-stick radial on-screen keyboard for KWin/Wayland. */
 #define _GNU_SOURCE
 #include <ctype.h>
-#include <limits.h>
+#include <errno.h>
+#include <glob.h>
 #include <locale.h>
 #include <poll.h>
 #include <signal.h>
