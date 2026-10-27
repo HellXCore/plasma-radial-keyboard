@@ -23,6 +23,163 @@ enum {
     BG_TRANSLUCENT = 2
 };
 
+/* ======================= Wayland Background Blur Protocols ======================= */
+/* Поддержка KDE Plasma 6.8+ (ext_background_effect_manager_v1) и fallback (org_kde_kwin_blur_manager) */
+struct ext_background_effect_manager_v1;
+struct ext_background_effect_surface_v1;
+struct org_kde_kwin_blur_manager;
+struct org_kde_kwin_blur;
+
+extern const struct wl_interface ext_background_effect_manager_v1_interface;
+extern const struct wl_interface ext_background_effect_surface_v1_interface;
+extern const struct wl_interface org_kde_kwin_blur_manager_interface;
+extern const struct wl_interface org_kde_kwin_blur_interface;
+
+static const struct wl_interface *blur_types[] = {
+    NULL,
+    &ext_background_effect_surface_v1_interface,
+    &wl_surface_interface,
+    &wl_region_interface,
+    &org_kde_kwin_blur_interface,
+};
+
+static const struct wl_message ext_bg_mgr_requests[] = {
+    { "destroy", "", blur_types + 0 },
+    { "get_background_effect", "no", blur_types + 1 },
+};
+
+static const struct wl_message ext_bg_mgr_events[] = {
+    { "capabilities", "u", blur_types + 0 },
+};
+
+const struct wl_interface ext_background_effect_manager_v1_interface = {
+    "ext_background_effect_manager_v1", 1,
+    2, ext_bg_mgr_requests,
+    1, ext_bg_mgr_events,
+};
+
+static const struct wl_message ext_bg_surf_requests[] = {
+    { "destroy", "", blur_types + 0 },
+    { "set_blur_region", "?o", blur_types + 3 },
+};
+
+const struct wl_interface ext_background_effect_surface_v1_interface = {
+    "ext_background_effect_surface_v1", 1,
+    2, ext_bg_surf_requests,
+    0, NULL,
+};
+
+static const struct wl_message kde_blur_mgr_requests[] = {
+    { "create", "no", blur_types + 4 },
+    { "unset", "o", blur_types + 2 },
+};
+
+const struct wl_interface org_kde_kwin_blur_manager_interface = {
+    "org_kde_kwin_blur_manager", 1,
+    2, kde_blur_mgr_requests,
+    0, NULL,
+};
+
+static const struct wl_message kde_blur_requests[] = {
+    { "commit", "", blur_types + 0 },
+    { "set_region", "?o", blur_types + 3 },
+    { "release", "", blur_types + 0 },
+};
+
+const struct wl_interface org_kde_kwin_blur_interface = {
+    "org_kde_kwin_blur", 1,
+    3, kde_blur_requests,
+    0, NULL,
+};
+
+struct ext_background_effect_manager_v1_listener {
+    void (*capabilities)(void *data, struct ext_background_effect_manager_v1 *mgr, uint32_t caps);
+};
+
+static void ext_bg_capabilities(void *d, struct ext_background_effect_manager_v1 *m, uint32_t caps)
+{
+    (void)d; (void)m; (void)caps;
+}
+
+static const struct ext_background_effect_manager_v1_listener ext_bg_listener = {
+    ext_bg_capabilities
+};
+
+static inline struct ext_background_effect_surface_v1 *
+ext_background_effect_manager_v1_get_background_effect(struct ext_background_effect_manager_v1 *mgr, struct wl_surface *surface)
+{
+    struct wl_proxy *id = wl_proxy_marshal_flags(
+        (struct wl_proxy *)mgr, 1, &ext_background_effect_surface_v1_interface,
+        wl_proxy_get_version((struct wl_proxy *)mgr), 0, NULL, surface);
+    return (struct ext_background_effect_surface_v1 *)id;
+}
+
+static inline void
+ext_background_effect_surface_v1_set_blur_region(struct ext_background_effect_surface_v1 *s, struct wl_region *region)
+{
+    wl_proxy_marshal_flags((struct wl_proxy *)s, 1, NULL,
+        wl_proxy_get_version((struct wl_proxy *)s), 0, region);
+}
+
+static inline void
+ext_background_effect_surface_v1_destroy(struct ext_background_effect_surface_v1 *s)
+{
+    wl_proxy_marshal_flags((struct wl_proxy *)s, 0, NULL,
+        wl_proxy_get_version((struct wl_proxy *)s), WL_MARSHAL_FLAG_DESTROY);
+}
+
+static inline void
+ext_background_effect_manager_v1_destroy(struct ext_background_effect_manager_v1 *mgr)
+{
+    wl_proxy_marshal_flags((struct wl_proxy *)mgr, 0, NULL,
+        wl_proxy_get_version((struct wl_proxy *)mgr), WL_MARSHAL_FLAG_DESTROY);
+}
+
+static inline struct org_kde_kwin_blur *
+org_kde_kwin_blur_manager_create(struct org_kde_kwin_blur_manager *mgr, struct wl_surface *surface)
+{
+    struct wl_proxy *id = wl_proxy_marshal_flags(
+        (struct wl_proxy *)mgr, 0, &org_kde_kwin_blur_interface,
+        wl_proxy_get_version((struct wl_proxy *)mgr), 0, NULL, surface);
+    return (struct org_kde_kwin_blur *)id;
+}
+
+static inline void
+org_kde_kwin_blur_manager_unset(struct org_kde_kwin_blur_manager *mgr, struct wl_surface *surface)
+{
+    wl_proxy_marshal_flags((struct wl_proxy *)mgr, 1, NULL,
+        wl_proxy_get_version((struct wl_proxy *)mgr), 0, surface);
+}
+
+static inline void
+org_kde_kwin_blur_manager_destroy(struct org_kde_kwin_blur_manager *mgr)
+{
+    wl_proxy_destroy((struct wl_proxy *)mgr);
+}
+
+static inline void
+org_kde_kwin_blur_set_region(struct org_kde_kwin_blur *blur, struct wl_region *region)
+{
+    wl_proxy_marshal_flags((struct wl_proxy *)blur, 1, NULL,
+        wl_proxy_get_version((struct wl_proxy *)blur), 0, region);
+}
+
+static inline void
+org_kde_kwin_blur_commit(struct org_kde_kwin_blur *blur)
+{
+    wl_proxy_marshal_flags((struct wl_proxy *)blur, 0, NULL,
+        wl_proxy_get_version((struct wl_proxy *)blur), 0);
+}
+
+static inline void
+org_kde_kwin_blur_release(struct org_kde_kwin_blur *blur)
+{
+    wl_proxy_marshal_flags((struct wl_proxy *)blur, 2, NULL,
+        wl_proxy_get_version((struct wl_proxy *)blur), WL_MARSHAL_FLAG_DESTROY);
+}
+
+/* ================================================================================= */
+
 typedef struct {
     struct wl_buffer *buf; void *data; size_t size; int busy;
     cairo_surface_t *cs;
@@ -51,6 +208,11 @@ typedef struct {
     struct zwp_input_method_v1 *im; struct zwp_input_panel_v1 *panel;
     struct wl_surface *surf; struct zwp_input_panel_surface_v1 *psurf;
     struct zwp_input_method_context_v1 *ctx; uint32_t serial;
+    struct ext_background_effect_manager_v1 *ext_bg_mgr;
+    struct ext_background_effect_surface_v1 *ext_bg_surf;
+    struct org_kde_kwin_blur_manager *kde_blur_mgr;
+    struct org_kde_kwin_blur *kde_blur;
+    int blur_applied;
     int scale, buf_scale;
     Buf bufs[2]; int bw, bh;
     int field_active;
@@ -220,7 +382,7 @@ static int ini_get(const char *path, const char *group, const char *key, char *o
 
 static void theme_defaults_breeze_dark(Theme *t)
 {
-    color_set(t->bg, 0.145, 0.165, 0.188, 0.88);
+    color_set(t->bg, 0.145, 0.165, 0.188, 0.85);
     color_set(t->border, 0.40, 0.45, 0.52, 0.40);
     color_set(t->wedge, 0.20, 0.23, 0.27, 0.85);
     color_set(t->wedge_border, 0.93, 0.94, 0.95, 0.14);
@@ -233,7 +395,7 @@ static void theme_defaults_breeze_dark(Theme *t)
     color_set(t->err, 0.93, 0.12, 0.14, 0.95);
     t->dark = 1;
     t->bg_style = BG_ACRYLIC;
-    t->bg_opacity = 0.88;
+    t->bg_opacity = 0.85;
     t->corner_radius = 18.0;
     t->accent_cfg[0] = 0;
 }
@@ -414,7 +576,6 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
         }
     }
 
-    /* Поддержка show с fallback на toggle для обратной совместимости */
     if (ini_get(path, "general", "show", v, sizeof v) ||
         ini_get(path, "general", "toggle", v, sizeof v)) {
         if (!parse_combo(v, &a->show_a, &a->show_b)) {
@@ -426,7 +587,6 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     if (ini_get(path, "general", "layout", v, sizeof v))
         snprintf(layout_path, n, "%s", v);
 
-    /* Биндинги клавиш из [controls] */
     if (ini_get(path, "controls", "backspace", v, sizeof v))
         if (!parse_btn_list(v, a->kb.binds.backspace, &a->kb.binds.n_backspace)) a->cfg_has_error = 1;
     if (ini_get(path, "controls", "space", v, sizeof v))
@@ -442,7 +602,6 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     if (ini_get(path, "controls", "hide", v, sizeof v))
         if (!parse_btn_list(v, a->kb.binds.hide, &a->kb.binds.n_hide)) a->cfg_has_error = 1;
 
-    /* UI & Шрифты */
     if (ini_get(path, "ui", "scale", v, sizeof v)) {
         int ok; double d = parse_coord_double(v, &ok);
         if (ok && d >= 0.5 && d <= 3.0) {
@@ -480,6 +639,51 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     if (a->cfg_has_error) {
         fprintf(stderr, "radialkb: [CONFIG WARNING] %s (using fallback values)\n",
                 a->cfg_err_msg[0] ? a->cfg_err_msg : "syntax error in config.ini");
+    }
+}
+
+/* ======================= blur protocol handling ======================= */
+static void update_surface_blur(App *a)
+{
+    if (!a->surf || !a->comp) return;
+
+    int want_blur = (a->th.bg_style == BG_ACRYLIC && a->visible);
+    if (want_blur == a->blur_applied) return;
+    a->blur_applied = want_blur;
+
+    if (a->ext_bg_mgr) {
+        if (want_blur) {
+            if (!a->ext_bg_surf)
+                a->ext_bg_surf = ext_background_effect_manager_v1_get_background_effect(a->ext_bg_mgr, a->surf);
+            if (a->ext_bg_surf) {
+                struct wl_region *reg = wl_compositor_create_region(a->comp);
+                wl_region_add(reg, 0, 0, a->ui.base_w * a->scale, a->ui.base_h * a->scale);
+                ext_background_effect_surface_v1_set_blur_region(a->ext_bg_surf, reg);
+                wl_region_destroy(reg);
+            }
+        } else if (a->ext_bg_surf) {
+            ext_background_effect_surface_v1_set_blur_region(a->ext_bg_surf, NULL);
+            ext_background_effect_surface_v1_destroy(a->ext_bg_surf);
+            a->ext_bg_surf = NULL;
+        }
+    } else if (a->kde_blur_mgr) {
+        if (want_blur) {
+            if (!a->kde_blur)
+                a->kde_blur = org_kde_kwin_blur_manager_create(a->kde_blur_mgr, a->surf);
+            if (a->kde_blur) {
+                struct wl_region *reg = wl_compositor_create_region(a->comp);
+                wl_region_add(reg, 0, 0, a->ui.base_w * a->scale, a->ui.base_h * a->scale);
+                org_kde_kwin_blur_set_region(a->kde_blur, reg);
+                org_kde_kwin_blur_commit(a->kde_blur);
+                wl_region_destroy(reg);
+            }
+        } else {
+            if (a->kde_blur) {
+                org_kde_kwin_blur_release(a->kde_blur);
+                a->kde_blur = NULL;
+            }
+            org_kde_kwin_blur_manager_unset(a->kde_blur_mgr, a->surf);
+        }
     }
 }
 
@@ -724,8 +928,8 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
     cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
     cairo_stroke(cr);
 
-    /* Стик */
-    double sx = is_left ? k->lx : k->ry;
+    /* Стик: исправлена привязка осей правого стика (sx = k->rx, sy = k->ry) */
+    double sx = is_left ? k->lx : k->rx;
     double sy = is_left ? k->ly : k->ry;
     double max_travel = r0 - 18.0 * a->ui.ui_scale;
     double puck_x = cx + sx * max_travel;
@@ -776,11 +980,12 @@ static void draw(App *a, cairo_t *cr)
     cairo_close_path(cr);
 
     if (th->bg_style == BG_ACRYLIC) {
+        /* Акриловый градиент глубины матового стекла */
         cairo_pattern_t *pat = cairo_pattern_create_linear(0, 0, 0, lh);
         double top_col[4] = {
-            th->bg[0] + (th->dark ? 0.04 : -0.02),
-            th->bg[1] + (th->dark ? 0.04 : -0.02),
-            th->bg[2] + (th->dark ? 0.05 : -0.02),
+            th->bg[0] + (th->dark ? 0.08 : -0.04),
+            th->bg[1] + (th->dark ? 0.08 : -0.04),
+            th->bg[2] + (th->dark ? 0.09 : -0.04),
             th->bg[3]
         };
         cairo_pattern_add_color_stop_rgba(pat, 0.0, top_col[0], top_col[1], top_col[2], top_col[3]);
@@ -789,10 +994,21 @@ static void draw(App *a, cairo_t *cr)
         cairo_fill_preserve(cr);
         cairo_pattern_destroy(pat);
 
+        /* Основная окантовка панели */
         cairo_rgba(cr, th->border);
         cairo_set_line_width(cr, 1.2 * a->ui.ui_scale);
         cairo_stroke(cr);
+
+        /* Highlight-контур: стеклянный световой отблеск по верхнему периметру */
+        cairo_new_path(cr);
+        cairo_arc(cr, rr + 1.0, rr + 1.0, rr, M_PI, 1.5 * M_PI);
+        cairo_line_to(cr, lw - rr - 1.0, 1.0);
+        cairo_arc(cr, lw - rr - 1.0, rr + 1.0, rr, 1.5 * M_PI, 1.75 * M_PI);
+        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, th->dark ? 0.22 : 0.40);
+        cairo_set_line_width(cr, 1.2 * a->ui.ui_scale);
+        cairo_stroke(cr);
     } else {
+        /* Translucent (простая полупрозрачность без блюра) либо Solid (сплошной) */
         cairo_rgba(cr, th->bg);
         cairo_fill_preserve(cr);
         cairo_rgba(cr, th->border);
@@ -971,6 +1187,7 @@ static void panel_show(App *a)
         a->bw = w; a->bh = h;
     }
     a->visible = 1;
+    update_surface_blur(a);
     kb_reset_input(&a->kb);
     app_redraw(a);
 }
@@ -980,6 +1197,7 @@ static void panel_hide(App *a)
     if (!a->visible && !a->surf) return;
     a->visible = 0;
     a->mapped = 0;
+    update_surface_blur(a);
     pads_apply_grab(a);
     if (a->surf) {
         wl_surface_attach(a->surf, NULL, 0, 0);
@@ -1008,7 +1226,6 @@ static void apply_visibility(App *a)
     else pads_apply_grab(a);
 }
 
-/* Принудительное отображение клавиатуры */
 static void show_panel(App *a)
 {
     if (a->ctx != NULL && a->npads > 0) {
@@ -1018,7 +1235,6 @@ static void show_panel(App *a)
     }
 }
 
-/* Принудительное скрытие клавиатуры */
 static void hide_panel(App *a)
 {
     a->user_hidden = 1;
@@ -1040,7 +1256,6 @@ static void ctx_surrounding(void *d, struct zwp_input_method_context_v1 *c, cons
         a->surrounding[0] = '\0';
     }
     a->field_active = 1;
-    /* При явной активации курсора в поле ввода сбрасываем ручное скрытие */
     a->user_hidden = 0;
     apply_visibility(a);
 }
@@ -1142,6 +1357,12 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char
         a->im = wl_registry_bind(r, name, &zwp_input_method_v1_interface, 1);
     else if (!strcmp(iface, "zwp_input_panel_v1"))
         a->panel = wl_registry_bind(r, name, &zwp_input_panel_v1_interface, 1);
+    else if (!strcmp(iface, "ext_background_effect_manager_v1")) {
+        a->ext_bg_mgr = wl_registry_bind(r, name, &ext_background_effect_manager_v1_interface, 1);
+        wl_proxy_add_listener((struct wl_proxy *)a->ext_bg_mgr, (void (**)(void))&ext_bg_listener, a);
+    } else if (!strcmp(iface, "org_kde_kwin_blur_manager")) {
+        a->kde_blur_mgr = wl_registry_bind(r, name, &org_kde_kwin_blur_manager_interface, 1);
+    }
 }
 static void reg_remove(void *d, struct wl_registry *r, uint32_t n) { (void)d; (void)r; (void)n; }
 static const struct wl_registry_listener reg_listener = { reg_global, reg_remove };
@@ -1302,6 +1523,7 @@ int main(int argc, char **argv)
             plasma_mode_load(&A);
             theme_load(&A);
             radial_config_load(&A, layout_path, sizeof layout_path);
+            update_surface_blur(&A);
             A.kb.dirty = 1;
 
             int nw = A.ui.base_w * A.scale;
@@ -1358,6 +1580,10 @@ int main(int argc, char **argv)
         if (A.visible && A.kb.dirty && now_ms() - A.last_draw >= 16) app_redraw(&A);
     }
     pads_close_all(&A);
+    if (A.ext_bg_surf) ext_background_effect_surface_v1_destroy(A.ext_bg_surf);
+    if (A.ext_bg_mgr) ext_background_effect_manager_v1_destroy(A.ext_bg_mgr);
+    if (A.kde_blur) org_kde_kwin_blur_release(A.kde_blur);
+    if (A.kde_blur_mgr) org_kde_kwin_blur_manager_destroy(A.kde_blur_mgr);
     if (A.ctx) zwp_input_method_context_v1_destroy(A.ctx);
     if (A.ino_input >= 0) close(A.ino_input);
     if (A.ino_cfg >= 0) close(A.ino_cfg);
