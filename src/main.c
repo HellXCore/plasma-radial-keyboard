@@ -365,7 +365,7 @@ static int parse_btn_list(const char *spec, int *arr, int *cnt)
 
 static int parse_toggle(const char *spec, int *a, int *b)
 {
-    char buf[64]; snprintf(buf, sizeof buf, "%s", spec ? spec : "select+start");
+    char buf[128]; snprintf(buf, sizeof buf, "%s", spec ? spec : "select+start");
     for (char *p = buf; *p; p++) *p = (char)tolower((unsigned char)*p);
     char *plus = strchr(buf, '+');
     if (!plus) {
