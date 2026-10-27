@@ -22,13 +22,19 @@
 #define MAXLANG 8
 #define MAXPADS 4
 #define TOKLEN 16
+#define MAX_BINDS 6
 
 enum {
     PLASMA_VK_NEVER = 0,     /* "Never" */
     PLASMA_VK_TOUCH = 1,     /* "With Touch and Tablet" */
     PLASMA_VK_ALWAYS = 2     /* "With Touch, Tablet, and Mouse" */
 };
-enum { INVOKE_AUTO = 0, INVOKE_MANUAL = 1 };
+
+enum {
+    INVOKE_AUTO = 0,
+    INVOKE_MANUAL = 1,
+    INVOKE_SMART = 2
+};
 
 static const int TOK2SLOT[NSLOTS] = {0, 2, 4, 6, 1, 3, 5, 7};
 
@@ -41,12 +47,41 @@ typedef struct {
     int has[3];
 } Layout;
 
+typedef struct {
+    int backspace[MAX_BINDS]; int n_backspace;
+    int space[MAX_BINDS];     int n_space;
+    int enter[MAX_BINDS];     int n_enter;
+    int shift[MAX_BINDS];     int n_shift;
+    int sym[MAX_BINDS];       int n_sym;
+    int layout[MAX_BINDS];    int n_layout;
+    int hide[MAX_BINDS];      int n_hide;
+} KeyBinds;
+
 #define DEFAULT_LAYOUTS \
 "[en]\n" \
 "lower: a b c d | e f g h | i j k l | m n o p | q r s t | u v w x | y z @ # | . , ? ! ' - : ;\n" \
 "sym: 1 2 3 4 | 5 6 7 8 | 9 0 - + | ( ) [ ] { } < > | @ # $ % ^ & * ~ | = / \\ <bar> <us> ` \" ' | . , ? ! : ; \xe2\x80\xa6 \xe2\x82\xac | \xe2\x82\xac \xc2\xa3 \xc2\xa5 \xc2\xa7 \xc2\xa9 \xc2\xb0 \xe2\x80\xa2 \xe2\x84\x96\n" \
 "[ru]\n" \
 "lower: \xd0\xb0 \xd0\xb1 \xd0\xb2 \xd0\xb3 \xd0\xb4 | \xd0\xb5 \xd1\x91 \xd0\xb6 \xd0\xb7 | \xd0\xb8 \xd0\xb9 \xd0\xba \xd0\xbb \xd0\xbc | \xd0\xbd \xd0\xbe \xd0\xbf \xd1\x80 | \xd1\x81 \xd1\x82 \xd1\x83 \xd1\x84 \xd1\x85 | \xd1\x86 \xd1\x87 \xd1\x88 \xd1\x89 | \xd1\x8a \xd1\x8b \xd1\x8c \xd1\x8d \xd1\x8e \xd1\x8f | . , ? ! ' - : ;\n"
+
+static inline int bind_contains(const int *arr, int n, int code)
+{
+    for (int i = 0; i < n; i++) {
+        if (arr[i] == code) return 1;
+    }
+    return 0;
+}
+
+static inline void binds_set_defaults(KeyBinds *b)
+{
+    b->n_backspace = 2; b->backspace[0] = BTN_EAST; b->backspace[1] = BTN_TL;
+    b->n_space = 3;     b->space[0] = BTN_NORTH; b->space[1] = BTN_WEST; b->space[2] = BTN_TR;
+    b->n_enter = 2;     b->enter[0] = BTN_SOUTH; b->enter[1] = BTN_START;
+    b->n_shift = 1;     b->shift[0] = BTN_TL2;
+    b->n_sym = 1;       b->sym[0] = BTN_THUMBL;
+    b->n_layout = 1;    b->layout[0] = BTN_THUMBR;
+    b->n_hide = 1;      b->hide[0] = BTN_SELECT;
+}
 
 static int u8_dec(const char *s, uint32_t *cp)
 {
@@ -161,7 +196,7 @@ static int parse_layouts(const char *text, Layout *out, int max)
     return n;
 }
 
-static int64_t now_ms(void)
+static inline int64_t now_ms(void)
 {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
@@ -170,7 +205,7 @@ static int64_t now_ms(void)
 enum { ST_NONE = 0, ST_CHANGED, ST_RELEASED };
 typedef struct { float peak; int sel; int active; } Stick;
 
-static int sector_of(float x, float y)
+static inline int sector_of(float x, float y)
 {
     float a = atan2f(x, -y);
     int s = (int)lrintf(a / (float)(M_PI / 4.0));
@@ -196,6 +231,7 @@ static int stick_update(Stick *s, float x, float y)
 typedef struct {
     int fd;
     int grabbed;
+    int grab_pending;
     int mn[ABS_CNT], mx[ABS_CNT];
     char name[64];
     char path[64];
@@ -226,30 +262,64 @@ static int pad_name_wanted(const char *n)
 static int pad_id_wanted(uint16_t vendor, uint16_t product, const char *name)
 {
     (void)product;
-    if (vendor == 0x054c) return pad_name_wanted(name); /* Sony — проверяем имя во избежание захвата тачпад-ноды */
-        if (vendor == 0x045e) return 1;                     /* Microsoft */
-            if (vendor == 0x1532 && name && strstr(name, "Razer")) return 1;
-            return pad_name_wanted(name);
+    if (vendor == 0x054c) return pad_name_wanted(name);
+    if (vendor == 0x045e) return 1;
+    if (vendor == 0x1532 && name && strstr(name, "Razer")) return 1;
+    return pad_name_wanted(name);
 }
 
-/* Hybrid visibility: Plasma mode + gamepad trigger + invoke mode. */
-static int vis_want(int im_active, int has_pad, int plasma_mode,
-                    int invoke_manual, int user_shown, int user_hidden)
+/* Проверка: зажата ли сейчас физически какая-либо клавиша на устройстве */
+static int pad_any_key_pressed(int fd)
+{
+    if (fd < 0) return 0;
+    unsigned long key_states[KEY_MAX / (8 * sizeof(long)) + 1] = {0};
+    if (ioctl(fd, EVIOCGKEY(sizeof key_states), key_states) < 0) return 0;
+    for (size_t i = 0; i < sizeof(key_states) / sizeof(key_states[0]); i++) {
+        if (key_states[i] != 0) return 1;
+    }
+    return 0;
+}
+
+/* Безопасное применение захвата: предотвращает зависание Super/кнопок */
+static int pad_set_grab_safe(Pad *p, int grab)
+{
+    if (p->fd < 0) return 0;
+    if (grab) {
+        if (p->grabbed) { p->grab_pending = 0; return 1; }
+        if (pad_any_key_pressed(p->fd)) {
+            p->grab_pending = 1;
+            return 0;
+        }
+        if (ioctl(p->fd, EVIOCGRAB, (void *)1) == 0) {
+            p->grabbed = 1;
+            p->grab_pending = 0;
+            return 1;
+        }
+    } else {
+        p->grab_pending = 0;
+        if (p->grabbed) {
+            ioctl(p->fd, EVIOCGRAB, (void *)0);
+            p->grabbed = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Логика видимости */
+static inline int vis_want(int im_active, int has_pad, int plasma_mode,
+                           int invoke_mode, int user_shown, int user_hidden)
 {
     if (!im_active || !has_pad || user_hidden) return 0;
-    if (invoke_manual) return user_shown;
-
-    /* Автоматический показ ТОЛЬКО в режиме PLASMA_VK_ALWAYS (2 - "Сенсорный ввод, планшет и мышь").
-     * При NEVER (0) и TOUCH (1 - "Сенсорный ввод и планшет") — открытие строго по хоткею (user_shown). */
+    if (invoke_mode == INVOKE_MANUAL) return user_shown;
+    if (invoke_mode == INVOKE_SMART) return user_shown;
     if (plasma_mode != PLASMA_VK_ALWAYS) return user_shown;
-
     return 1;
 }
 
-/* Ввод активен ТОЛЬКО когда панель отображена и физически отрисовывается на экране */
-static inline int input_armed(int panel_shown, int mapped)
+static inline int input_armed_strict(int panel_shown, int mapped, int im_active)
 {
-    return panel_shown && mapped;
+    return panel_shown && mapped && im_active;
 }
 
 static inline int tbit(const unsigned long *a, int b)
@@ -260,7 +330,7 @@ static inline int tbit(const unsigned long *a, int b)
 static int pad_has_stick_layout(const unsigned long *ab, const unsigned long *kb)
 {
     return tbit(ab, ABS_X) && tbit(ab, ABS_Y) && tbit(ab, ABS_RX) &&
-    tbit(ab, ABS_RY) && (tbit(kb, BTN_SOUTH) || tbit(kb, BTN_GAMEPAD));
+           tbit(ab, ABS_RY) && (tbit(kb, BTN_SOUTH) || tbit(kb, BTN_GAMEPAD));
 }
 
 static int pad_open_at(Pad *p, const char *path, int grab)
@@ -273,8 +343,8 @@ static int pad_open_at(Pad *p, const char *path, int grab)
         ioctl(fd, EVIOCGBIT(EV_KEY, sizeof kb), kb) < 0 ||
         !pad_has_stick_layout(ab, kb)) {
         close(fd); return -1;
-        }
-        struct input_id id; memset(&id, 0, sizeof id);
+    }
+    struct input_id id; memset(&id, 0, sizeof id);
     ioctl(fd, EVIOCGID, &id);
     memset(p, 0, sizeof *p);
     p->fd = fd; p->vendor = id.vendor; p->product = id.product;
@@ -290,19 +360,7 @@ static int pad_open_at(Pad *p, const char *path, int grab)
             p->mn[codes[c]] = ai.minimum; p->mx[codes[c]] = ai.maximum;
         }
     }
-    if (grab) {
-        if (ioctl(fd, EVIOCGRAB, (void *)1) == 0) p->grabbed = 1;
-    }
-    return 0;
-}
-
-static int pad_set_grab(Pad *p, int grab)
-{
-    if (p->fd < 0 || p->grabbed == grab) return 0;
-    if (ioctl(p->fd, EVIOCGRAB, grab ? (void *)1 : (void *)0) == 0) {
-        p->grabbed = grab;
-        return 1;
-    }
+    if (grab) pad_set_grab_safe(p, 1);
     return 0;
 }
 
@@ -310,7 +368,7 @@ static void pad_close(Pad *p)
 {
     if (p->fd < 0) return;
     if (p->grabbed) ioctl(p->fd, EVIOCGRAB, (void *)0);
-    close(p->fd); p->fd = -1; p->grabbed = 0;
+    close(p->fd); p->fd = -1; p->grabbed = 0; p->grab_pending = 0;
 }
 
 static float pad_norm(const Pad *p, int code, int v)
@@ -347,6 +405,7 @@ typedef struct Kb {
     int dirty, hide;
     uint32_t held; int64_t rep_at;
     char last[TOKLEN];
+    KeyBinds binds;
     void *ud;
     void (*text)(void *ud, const char *utf8);
     void (*key)(void *ud, uint32_t keysym);
@@ -360,7 +419,7 @@ static void kb_reset_input(Kb *k)
     k->hat[0] = k->hat[1] = 0; k->held = 0; k->hide = 0; k->dirty = 1;
 }
 
-static int kb_layer(const Kb *k) { return k->sym ? L_SYM : (k->shift ? L_UPPER : L_LOWER); }
+static inline int kb_layer(const Kb *k) { return k->sym ? L_SYM : (k->shift ? L_UPPER : L_LOWER); }
 
 static void kb_commit_slot(Kb *k, int slot)
 {
@@ -371,7 +430,7 @@ static void kb_commit_slot(Kb *k, int slot)
     k->dirty = 1;
 }
 
-static void kb_tap(Kb *k, uint32_t sym) { k->key(k->ud, sym); }
+static inline void kb_tap(Kb *k, uint32_t sym) { k->key(k->ud, sym); }
 
 static void kb_hold(Kb *k, uint32_t sym, int down)
 {
@@ -408,23 +467,31 @@ static void kb_key(Kb *k, int code, int v)
 {
     int down = (v == 1);
     if (v == 2) return;
-    switch (code) {
-        case BTN_SOUTH: if (down) kb_tap(k, SYM_RETURN); break;
-        case BTN_START: if (down) kb_tap(k, SYM_RETURN); break;
-        case BTN_EAST: case BTN_TL: kb_hold(k, SYM_BACKSPACE, down); break;
-        case BTN_NORTH: case BTN_WEST: case BTN_TR: kb_hold(k, SYM_SPACE, down); break;
-        case BTN_SELECT: if (down) k->hide = 1; break;
-        case BTN_THUMBL: if (down) k->sym = !k->sym; break;
-        case BTN_THUMBR: if (down && k->nlay > 0) k->cur = (k->cur + 1) % k->nlay; break;
-        case BTN_TL2: k->sh_btn = down; k->shift = k->sh_abs || k->sh_btn; break;
-        case BTN_TR2: k->rt_btn = down; kb_rt_update(k); break;
-        case BTN_DPAD_LEFT:  kb_hold(k, SYM_LEFT, down); break;
-        case BTN_DPAD_RIGHT: kb_hold(k, SYM_RIGHT, down); break;
-        case BTN_DPAD_UP:    kb_hold(k, SYM_UP, down); break;
-        case BTN_DPAD_DOWN:  kb_hold(k, SYM_DOWN, down); break;
-        case BTN_MODE:       /* Поглощаем кнопку Guide/Super/PS во избежание залипания */
-            break;
-        default: return;
+
+    if (bind_contains(k->binds.backspace, k->binds.n_backspace, code)) {
+        kb_hold(k, SYM_BACKSPACE, down);
+    } else if (bind_contains(k->binds.space, k->binds.n_space, code)) {
+        kb_hold(k, SYM_SPACE, down);
+    } else if (bind_contains(k->binds.enter, k->binds.n_enter, code)) {
+        if (down) kb_tap(k, SYM_RETURN);
+    } else if (bind_contains(k->binds.shift, k->binds.n_shift, code)) {
+        k->sh_btn = down; k->shift = k->sh_abs || k->sh_btn;
+    } else if (bind_contains(k->binds.sym, k->binds.n_sym, code)) {
+        if (down) k->sym = !k->sym;
+    } else if (bind_contains(k->binds.layout, k->binds.n_layout, code)) {
+        if (down && k->nlay > 0) k->cur = (k->cur + 1) % k->nlay;
+    } else if (bind_contains(k->binds.hide, k->binds.n_hide, code)) {
+        if (down) k->hide = 1;
+    } else {
+        switch (code) {
+            case BTN_TR2: k->rt_btn = down; kb_rt_update(k); break;
+            case BTN_DPAD_LEFT:  kb_hold(k, SYM_LEFT, down); break;
+            case BTN_DPAD_RIGHT: kb_hold(k, SYM_RIGHT, down); break;
+            case BTN_DPAD_UP:    kb_hold(k, SYM_UP, down); break;
+            case BTN_DPAD_DOWN:  kb_hold(k, SYM_DOWN, down); break;
+            case BTN_MODE: break;
+            default: return;
+        }
     }
     k->dirty = 1;
 }
@@ -440,7 +507,7 @@ static void kb_abs(Kb *k, const Pad *p, int code, int v)
             if (code == ABS_RX) k->rx = pad_norm(p, code, v); else k->ry = pad_norm(p, code, v);
             if (stick_update(&k->R, k->rx, k->ry) == ST_RELEASED && k->R.sel >= 0)
                 kb_commit_slot(k, k->R.sel);
-        break;
+            break;
         case ABS_Z:
             k->sh_abs = pad_norm01(p, code, v) > 0.5f; k->shift = k->sh_abs || k->sh_btn; break;
         case ABS_RZ:
