@@ -718,12 +718,14 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
     cairo_stroke(cr);
 
     /* Стик */
-    double sx = is_left ? k->lx : k->ly, sy = is_left ? k->ly : k->ry;
+    double sx = is_left ? k->lx : k->rx;
+    double sy = is_left ? k->ly : k->ry;
     double max_travel = r0 - 18.0 * a->ui.ui_scale;
-    double puck_x = cx + (is_left ? k->lx : k->rx) * max_travel;
-    double puck_y = cy + (is_left ? k->ly : k->ry) * max_travel;
+    double puck_x = cx + sx * max_travel;
+    double puck_y = cy + sy * max_travel;
 
-    if (hypotf((float)(is_left ? k->lx : k->rx), (float)(is_left ? k->ly : k->ry)) > 0.15f) {
+    /* Трейс-линия отклонения стика */
+    if (hypotf((float)sx, (float)sy) > 0.15f) {
         cairo_new_path(cr);
         cairo_move_to(cr, cx, cy);
         cairo_line_to(cr, puck_x, puck_y);
@@ -732,6 +734,7 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
         cairo_stroke(cr);
     }
 
+    /* Шляпка стика */
     cairo_new_path(cr);
     cairo_arc(cr, puck_x, puck_y, 9.0 * a->ui.ui_scale, 0, 2 * M_PI);
     cairo_rgba(cr, th->wedge);
