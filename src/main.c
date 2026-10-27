@@ -30,7 +30,7 @@ typedef struct {
 
 typedef struct {
     double bg[4], border[4], wedge[4], wedge_border[4], wedge_empty[4], hub[4];
-    double fg[4], fg_dim[4], accent[4], accent_fg[4];
+    double fg[4], fg_dim[4], accent[4], accent_fg[4], err[4];
     int dark;
     int bg_style;
     double bg_opacity;
@@ -71,6 +71,8 @@ typedef struct {
     char cfg_dir[PATH_MAX];
     char kwinrc[PATH_MAX + 32];
     char kdeglobals[PATH_MAX + 32];
+    int cfg_has_error;
+    char cfg_err_msg[256];
     Theme th;
     UiConfig ui;
 } App;
@@ -79,6 +81,69 @@ static App A;
 
 static void color_set(double *c, double r, double g, double b, double a)
 { c[0] = r; c[1] = g; c[2] = b; c[3] = a; }
+
+/* Локаленезависимый парсер чисел с плавающей точкой (. или ,) */
+static double parse_coord_double(const char *s, int *ok)
+{
+    if (ok) *ok = 0;
+    if (!s) return 0.0;
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    if (!*s) return 0.0;
+
+    int sign = 1;
+    if (*s == '-') { sign = -1; s++; }
+    else if (*s == '+') { s++; }
+
+    if (!isdigit((unsigned char)*s) && *s != '.' && *s != ',') return 0.0;
+
+    double int_part = 0.0;
+    int has_digits = 0;
+    while (isdigit((unsigned char)*s)) {
+        int_part = int_part * 10.0 + (*s - '0');
+        s++;
+        has_digits = 1;
+    }
+
+    double frac_part = 0.0;
+    if (*s == '.' || *s == ',') {
+        s++;
+        double div = 10.0;
+        while (isdigit((unsigned char)*s)) {
+            frac_part += (*s - '0') / div;
+            div *= 10.0;
+            s++;
+            has_digits = 1;
+        }
+    }
+
+    if (!has_digits) return 0.0;
+    if (ok) *ok = 1;
+    return sign * (int_part + frac_part);
+}
+
+static char *trim_whitespace(char *str)
+{
+    while (*str == ' ' || *str == '\t' || *str == '\r' || *str == '\n') str++;
+    if (!*str) return str;
+    char *end = str + strlen(str) - 1;
+    while (end > str && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
+        *end = '\0';
+        end--;
+    }
+    return str;
+}
+
+static void strip_comment(char *s)
+{
+    int in_quote = 0;
+    for (char *p = s; *p; p++) {
+        if (*p == '"') in_quote = !in_quote;
+        else if (!in_quote && (*p == '#' || *p == ';')) {
+            *p = '\0';
+            break;
+        }
+    }
+}
 
 static int parse_rgb(const char *s, double *o)
 {
@@ -118,26 +183,30 @@ static int ini_get(const char *path, const char *group, const char *key, char *o
     char line[1024], cur[128] = "";
     int found = 0;
     while (fgets(line, sizeof line, f)) {
-        char *s = line;
-        while (*s == ' ' || *s == '\t') s++;
-        if (*s == '#' || *s == '\n' || !*s) continue;
+        strip_comment(line);
+        char *s = trim_whitespace(line);
+        if (!*s) continue;
         if (*s == '[') {
             char *e = strchr(s, ']');
             cur[0] = 0;
             if (e) {
                 size_t L = (size_t)(e - s - 1); if (L > sizeof cur - 1) L = sizeof cur - 1;
                 memcpy(cur, s + 1, L); cur[L] = 0;
+                trim_whitespace(cur);
             }
             continue;
         }
-        if (strcmp(cur, group)) continue;
-        size_t kl = strlen(key);
-        if (strncmp(s, key, kl) || s[kl] != '=') continue;
-        s += kl + 1;
-        char *nl = strchr(s, '\n'); if (nl) *nl = 0;
-        char *cr = strchr(s, '\r'); if (cr) *cr = 0;
-        snprintf(out, n, "%s", s);
-        found = 1; break;
+        if (strcasecmp(cur, group) != 0) continue;
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char *k = trim_whitespace(s);
+        char *val = trim_whitespace(eq + 1);
+        if (!strcasecmp(k, key)) {
+            snprintf(out, n, "%s", val);
+            found = 1;
+            break;
+        }
     }
     fclose(f);
     return found;
@@ -146,15 +215,16 @@ static int ini_get(const char *path, const char *group, const char *key, char *o
 static void theme_defaults_breeze_dark(Theme *t)
 {
     color_set(t->bg, 0.145, 0.165, 0.188, 0.88);
-    color_set(t->border, 0.40, 0.45, 0.52, 0.45);
+    color_set(t->border, 0.40, 0.45, 0.52, 0.40);
     color_set(t->wedge, 0.20, 0.23, 0.27, 0.85);
-    color_set(t->wedge_border, 0.35, 0.40, 0.48, 0.50);
-    color_set(t->wedge_empty, 0.16, 0.18, 0.21, 0.35);
-    color_set(t->hub, 0.12, 0.14, 0.16, 0.90);
+    color_set(t->wedge_border, 0.93, 0.94, 0.95, 0.14);
+    color_set(t->wedge_empty, 0.16, 0.18, 0.21, 0.25);
+    color_set(t->hub, 0.11, 0.12, 0.15, 0.95);
     color_set(t->fg, 0.93, 0.94, 0.95, 1.0);
     color_set(t->fg_dim, 0.65, 0.69, 0.74, 1.0);
     color_set(t->accent, 0.235, 0.576, 0.886, 1.0);
     color_set(t->accent_fg, 1.0, 1.0, 1.0, 1.0);
+    color_set(t->err, 0.93, 0.12, 0.14, 0.95);
     t->dark = 1;
     t->bg_style = BG_ACRYLIC;
     t->bg_opacity = 0.88;
@@ -184,12 +254,12 @@ static void theme_load(App *a)
         else t->bg_style = BG_ACRYLIC;
     }
     if (ini_get(cfg_theme, "theme", "background_opacity", val, sizeof val)) {
-        double op = atof(val);
-        if (op >= 0.1 && op <= 1.0) t->bg_opacity = op;
+        int ok; double op = parse_coord_double(val, &ok);
+        if (ok && op >= 0.1 && op <= 1.0) t->bg_opacity = op;
     }
     if (ini_get(cfg_theme, "theme", "corner_radius", val, sizeof val)) {
-        double cr = atof(val);
-        if (cr >= 0.0 && cr <= 48.0) t->corner_radius = cr;
+        int ok; double cr = parse_coord_double(val, &ok);
+        if (ok && cr >= 0.0 && cr <= 48.0) t->corner_radius = cr;
     }
     if (ini_get(cfg_theme, "theme", "accent_color", val, sizeof val)) {
         snprintf(t->accent_cfg, sizeof t->accent_cfg, "%s", val);
@@ -226,10 +296,10 @@ static void theme_load(App *a)
                       bgc[2] * (1 - mix) + fgc[2] * mix, 0.85);
         }
 
-        color_set(t->wedge_border, t->fg[0], t->fg[1], t->fg[2], t->dark ? 0.14 : 0.20);
-        color_set(t->border, t->dark ? 1.0 : 0.0, t->dark ? 1.0 : 0.0, t->dark ? 1.0 : 0.0, t->dark ? 0.20 : 0.15);
-        color_set(t->wedge_empty, bgc[0] * 0.85, bgc[1] * 0.85, bgc[2] * 0.85, 0.35);
-        color_set(t->hub, bgc[0] * 0.75, bgc[1] * 0.75, bgc[2] * 0.75, 0.88);
+        color_set(t->wedge_border, t->fg[0], t->fg[1], t->fg[2], t->dark ? 0.14 : 0.18);
+        color_set(t->border, t->dark ? 1.0 : 0.0, t->dark ? 1.0 : 0.0, t->dark ? 1.0 : 0.0, t->dark ? 0.18 : 0.12);
+        color_set(t->wedge_empty, bgc[0] * 0.85, bgc[1] * 0.85, bgc[2] * 0.85, 0.25);
+        color_set(t->hub, bgc[0] * 0.65, bgc[1] * 0.65, bgc[2] * 0.65, 0.92);
     }
 }
 
@@ -268,12 +338,13 @@ static int map_btn_name(const char *s)
     return -1;
 }
 
-static void parse_btn_list(const char *spec, int *arr, int *cnt)
+static int parse_btn_list(const char *spec, int *arr, int *cnt)
 {
     *cnt = 0;
-    if (!spec || !*spec) return;
+    if (!spec || !*spec) return 1;
     char buf[128]; snprintf(buf, sizeof buf, "%s", spec);
     char *p = buf;
+    int err = 0;
     while (*p && *cnt < MAX_BINDS) {
         while (*p == ' ' || *p == '\t' || *p == ',') p++;
         if (!*p) break;
@@ -285,34 +356,29 @@ static void parse_btn_list(const char *spec, int *arr, int *cnt)
         char term = *e; *e = 0;
         int code = map_btn_name(p);
         if (code > 0) arr[(*cnt)++] = code;
+        else err = 1;
         if (!term) break;
         p = e + 1;
     }
+    return !err;
 }
 
-static void parse_toggle(const char *spec, int *a, int *b)
+static int parse_toggle(const char *spec, int *a, int *b)
 {
     char buf[64]; snprintf(buf, sizeof buf, "%s", spec ? spec : "select+start");
     for (char *p = buf; *p; p++) *p = (char)tolower((unsigned char)*p);
     char *plus = strchr(buf, '+');
     if (!plus) {
-        int x = map_btn_name(buf);
+        int x = map_btn_name(trim_whitespace(buf));
         *a = x > 0 ? x : BTN_SELECT;
         *b = -1;
-        return;
+        return (x > 0);
     }
     *plus = 0;
-    int x = map_btn_name(buf), y = map_btn_name(plus + 1);
+    int x = map_btn_name(trim_whitespace(buf)), y = map_btn_name(trim_whitespace(plus + 1));
     *a = x > 0 ? x : BTN_SELECT;
     *b = y > 0 ? y : BTN_START;
-}
-
-static double parse_coord_double(const char *s)
-{
-    if (!s) return 0.0;
-    char buf[128]; snprintf(buf, sizeof buf, "%.127s", s);
-    for (char *p = buf; *p; p++) if (*p == ',') *p = '.';
-    return strtod(buf, NULL);
+    return (x > 0 && y > 0);
 }
 
 static void radial_config_load(App *a, char *layout_path, size_t n)
@@ -325,42 +391,66 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     a->ui.font_scale = 1.0;
     snprintf(a->ui.font_family, sizeof a->ui.font_family, "Noto Sans");
     binds_set_defaults(&a->kb.binds);
+    a->cfg_has_error = 0;
+    a->cfg_err_msg[0] = 0;
+
+    FILE *f_test = fopen(path, "r");
+    if (!f_test) return;
+    fclose(f_test);
 
     if (ini_get(path, "general", "invoke", v, sizeof v)) {
         if (!strcmp(v, "manual")) a->invoke = INVOKE_MANUAL;
         else if (!strcmp(v, "auto")) a->invoke = INVOKE_AUTO;
         else if (!strcmp(v, "smart")) a->invoke = INVOKE_SMART;
+        else {
+            a->cfg_has_error = 1;
+            snprintf(a->cfg_err_msg, sizeof a->cfg_err_msg, "Unknown invoke mode: '%s'", v);
+        }
     }
-    if (ini_get(path, "general", "toggle", v, sizeof v)) parse_toggle(v, &a->toggle_a, &a->toggle_b);
-    else parse_toggle("select+start", &a->toggle_a, &a->toggle_b);
+    if (ini_get(path, "general", "toggle", v, sizeof v)) {
+        if (!parse_toggle(v, &a->toggle_a, &a->toggle_b)) {
+            a->cfg_has_error = 1;
+            snprintf(a->cfg_err_msg, sizeof a->cfg_err_msg, "Invalid toggle combo: '%s'", v);
+        }
+    }
 
     if (ini_get(path, "general", "layout", v, sizeof v))
         snprintf(layout_path, n, "%s", v);
 
     /* Биндинги клавиш из [controls] */
     if (ini_get(path, "controls", "backspace", v, sizeof v))
-        parse_btn_list(v, a->kb.binds.backspace, &a->kb.binds.n_backspace);
+        if (!parse_btn_list(v, a->kb.binds.backspace, &a->kb.binds.n_backspace)) a->cfg_has_error = 1;
     if (ini_get(path, "controls", "space", v, sizeof v))
-        parse_btn_list(v, a->kb.binds.space, &a->kb.binds.n_space);
+        if (!parse_btn_list(v, a->kb.binds.space, &a->kb.binds.n_space)) a->cfg_has_error = 1;
     if (ini_get(path, "controls", "enter", v, sizeof v))
-        parse_btn_list(v, a->kb.binds.enter, &a->kb.binds.n_enter);
+        if (!parse_btn_list(v, a->kb.binds.enter, &a->kb.binds.n_enter)) a->cfg_has_error = 1;
     if (ini_get(path, "controls", "shift", v, sizeof v))
-        parse_btn_list(v, a->kb.binds.shift, &a->kb.binds.n_shift);
+        if (!parse_btn_list(v, a->kb.binds.shift, &a->kb.binds.n_shift)) a->cfg_has_error = 1;
     if (ini_get(path, "controls", "symbols", v, sizeof v))
-        parse_btn_list(v, a->kb.binds.sym, &a->kb.binds.n_sym);
+        if (!parse_btn_list(v, a->kb.binds.sym, &a->kb.binds.n_sym)) a->cfg_has_error = 1;
     if (ini_get(path, "controls", "layout_switch", v, sizeof v))
-        parse_btn_list(v, a->kb.binds.layout, &a->kb.binds.n_layout);
+        if (!parse_btn_list(v, a->kb.binds.layout, &a->kb.binds.n_layout)) a->cfg_has_error = 1;
     if (ini_get(path, "controls", "hide", v, sizeof v))
-        parse_btn_list(v, a->kb.binds.hide, &a->kb.binds.n_hide);
+        if (!parse_btn_list(v, a->kb.binds.hide, &a->kb.binds.n_hide)) a->cfg_has_error = 1;
 
     /* UI & Шрифты */
     if (ini_get(path, "ui", "scale", v, sizeof v)) {
-        double d = parse_coord_double(v);
-        if (d >= 0.5 && d <= 3.0) a->ui.ui_scale = d;
+        int ok; double d = parse_coord_double(v, &ok);
+        if (ok && d >= 0.5 && d <= 3.0) {
+            a->ui.ui_scale = d;
+        } else {
+            a->cfg_has_error = 1;
+            snprintf(a->cfg_err_msg, sizeof a->cfg_err_msg, "Invalid scale: '%s'", v);
+        }
     }
     if (ini_get(path, "ui", "font_scale", v, sizeof v)) {
-        double d = parse_coord_double(v);
-        if (d >= 0.5 && d <= 3.0) a->ui.font_scale = d;
+        int ok; double d = parse_coord_double(v, &ok);
+        if (ok && d >= 0.5 && d <= 3.0) {
+            a->ui.font_scale = d;
+        } else {
+            a->cfg_has_error = 1;
+            snprintf(a->cfg_err_msg, sizeof a->cfg_err_msg, "Invalid font_scale: '%s'", v);
+        }
     }
     if (ini_get(path, "ui", "font_family", v, sizeof v)) {
         snprintf(a->ui.font_family, sizeof a->ui.font_family, "%.*s",
@@ -377,6 +467,11 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
 
     if (!custom_w) a->ui.base_w = (int)(DEFAULT_LW * a->ui.ui_scale);
     if (!custom_h) a->ui.base_h = (int)(DEFAULT_LH * a->ui.ui_scale);
+
+    if (a->cfg_has_error) {
+        fprintf(stderr, "radialkb: [CONFIG WARNING] %s (using fallback values)\n",
+                a->cfg_err_msg[0] ? a->cfg_err_msg : "syntax error in config.ini");
+    }
 }
 
 /* ======================= text output ======================= */
@@ -446,7 +541,7 @@ static void text_c(cairo_t *cr, App *a, const char *s, double x, double y, doubl
     char fdesc[192];
     snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, bold ? "Bold" : "Regular");
     PangoFontDescription *fd = pango_font_description_from_string(fdesc);
-    pango_font_description_set_absolute_size(fd, px * a->ui.font_scale * PANGO_SCALE);
+    pango_font_description_set_absolute_size(fd, px * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
     pango_layout_set_font_description(l, fd);
     pango_layout_set_text(l, s, -1);
     int w, h; pango_layout_get_pixel_size(l, &w, &h);
@@ -464,7 +559,7 @@ static void text_fit(cairo_t *cr, App *a, const char *s, double x, double y, dou
     char fdesc[192];
     snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, bold ? "Bold" : "Regular");
     PangoFontDescription *fd = pango_font_description_from_string(fdesc);
-    pango_font_description_set_absolute_size(fd, px * a->ui.font_scale * PANGO_SCALE);
+    pango_font_description_set_absolute_size(fd, px * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
     pango_layout_set_font_description(l, fd);
     pango_layout_set_width(l, (int)(maxw * PANGO_SCALE));
     pango_layout_set_alignment(l, PANGO_ALIGN_CENTER);
@@ -478,10 +573,11 @@ static void text_fit(cairo_t *cr, App *a, const char *s, double x, double y, dou
     cairo_new_path(cr);
 }
 
-static void wedge(cairo_t *cr, double cx, double cy, double r0, double r1, int sector)
+/* Отрисовка сектора с эстетичными зазорами Breeze */
+static void wedge_breeze(cairo_t *cr, double cx, double cy, double r0, double r1, int sector)
 {
     double th = sector * (M_PI / 4) - M_PI / 2;
-    double half = M_PI / 8 - 0.035;
+    double half = M_PI / 8 - 0.048; /* Выверенный межсекторный зазор */
     cairo_new_path(cr);
     cairo_arc(cr, cx, cy, r1, th - half, th + half);
     cairo_arc_negative(cr, cx, cy, r0, th + half, th - half);
@@ -494,6 +590,60 @@ static void sector_pos(double cx, double cy, double r, int sector, double *x, do
     *x = cx + r * sin(th); *y = cy - r * cos(th);
 }
 
+/* Бейдж для статусов и подсказок кнопок геймпада в стиле Breeze */
+static void draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *desc,
+                            double x, double y, double h)
+{
+    const Theme *th = &a->th;
+    double r = h / 2.0;
+
+    PangoLayout *lk = pango_cairo_create_layout(cr);
+    char fdesc[192];
+    snprintf(fdesc, sizeof fdesc, "%s Bold", a->ui.font_family);
+    PangoFontDescription *fdk = pango_font_description_from_string(fdesc);
+    pango_font_description_set_absolute_size(fdk, (h * 0.52) * a->ui.font_scale * PANGO_SCALE);
+    pango_layout_set_font_description(lk, fdk);
+    pango_layout_set_text(lk, key, -1);
+    int kw, kh; pango_layout_get_pixel_size(lk, &kw, &kh);
+
+    double pad_x = 8.0 * a->ui.ui_scale;
+    double box_w = kw + pad_x * 2;
+    if (box_w < h) box_w = h;
+
+    /* Кейкап кнопки */
+    cairo_new_path(cr);
+    cairo_arc(cr, x + box_w - r, y + r, r, -M_PI / 2, M_PI / 2);
+    cairo_arc(cr, x + r, y + r, r, M_PI / 2, 1.5 * M_PI);
+    cairo_close_path(cr);
+
+    cairo_rgba(cr, th->wedge);
+    cairo_fill_preserve(cr);
+    cairo_rgba(cr, th->border);
+    cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
+    cairo_stroke(cr);
+
+    cairo_rgba(cr, th->fg);
+    cairo_move_to(cr, x + (box_w - kw) / 2.0, y + (h - kh) / 2.0);
+    pango_cairo_show_layout(cr, lk);
+    pango_font_description_free(fdk); g_object_unref(lk);
+
+    /* Текст описания действия */
+    if (desc && *desc) {
+        PangoLayout *ld = pango_cairo_create_layout(cr);
+        snprintf(fdesc, sizeof fdesc, "%s Regular", a->ui.font_family);
+        PangoFontDescription *fdd = pango_font_description_from_string(fdesc);
+        pango_font_description_set_absolute_size(fdd, (h * 0.50) * a->ui.font_scale * PANGO_SCALE);
+        pango_layout_set_font_description(ld, fdd);
+        pango_layout_set_text(ld, desc, -1);
+        int dw, dh; pango_layout_get_pixel_size(ld, &dw, &dh);
+
+        cairo_rgba(cr, th->fg_dim);
+        cairo_move_to(cr, x + box_w + 6.0 * a->ui.ui_scale, y + (h - dh) / 2.0);
+        pango_cairo_show_layout(cr, ld);
+        pango_font_description_free(fdd); g_object_unref(ld);
+    }
+}
+
 static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, double r0, int is_left)
 {
     Kb *k = &a->kb;
@@ -501,16 +651,26 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
     const Layout *Ly = &k->lay[k->cur];
     int layer = kb_layer(k);
     const Group *grp = &Ly->g[layer][k->group];
-    double maxw = (R - r0) * 0.72;
+    double maxw = (R - r0) * 0.74;
+
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
 
     for (int s = 0; s < NSLOTS; s++) {
         int hot = is_left ? (s == k->group) : (k->R.active && k->R.sel == s);
-        wedge(cr, cx, cy, r0, R, s);
+        wedge_breeze(cr, cx, cy, r0, R, s);
+
         if (hot) {
-            cairo_rgba(cr, th->accent);
+            /* Активный сектор в акцентном цвете Plasma */
+            cairo_pattern_t *pat = cairo_pattern_create_linear(cx, cy - R, cx, cy + R);
+            cairo_pattern_add_color_stop_rgba(pat, 0.0, th->accent[0] * 1.08, th->accent[1] * 1.08, th->accent[2] * 1.08, 1.0);
+            cairo_pattern_add_color_stop_rgba(pat, 1.0, th->accent[0] * 0.92, th->accent[1] * 0.92, th->accent[2] * 0.92, 1.0);
+            cairo_set_source(cr, pat);
             cairo_fill_preserve(cr);
-            cairo_set_line_width(cr, 1.6);
-            cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.45);
+            cairo_pattern_destroy(pat);
+
+            /* Акцентный контур */
+            cairo_set_line_width(cr, 1.8 * a->ui.ui_scale);
+            cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, th->dark ? 0.60 : 0.85);
             cairo_stroke(cr);
         } else if (!is_left && !grp->t[s][0]) {
             cairo_rgba(cr, th->wedge_empty);
@@ -519,11 +679,11 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
             cairo_rgba(cr, th->wedge);
             cairo_fill_preserve(cr);
             cairo_rgba(cr, th->wedge_border);
-            cairo_set_line_width(cr, 1.0);
+            cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
             cairo_stroke(cr);
         }
 
-        double x, y; sector_pos(cx, cy, (R + r0) / 2, s, &x, &y);
+        double x, y; sector_pos(cx, cy, (R + r0) / 2.0, s, &x, &y);
         const double *text_col = hot ? th->accent_fg : th->fg;
 
         if (is_left) {
@@ -542,23 +702,54 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
                     strncat(buf, g->t[TOK2SLOT[i]], sizeof buf - strlen(buf) - 1);
                 }
             }
-            text_fit(cr, a, buf, x, y, maxw, 15, text_col, hot);
+            text_fit(cr, a, buf, x, y, maxw, 14.0, text_col, hot);
         } else if (grp->t[s][0]) {
-            text_fit(cr, a, grp->t[s], x, y, maxw, strlen(grp->t[s]) > 2 ? 20 : 28, text_col, 1);
+            text_fit(cr, a, grp->t[s], x, y, maxw, strlen(grp->t[s]) > 2 ? 18.0 : 26.0, text_col, 1);
         }
     }
 
-    /* Хаб стика */
+    /* Углубление хаба стика (track-well) */
     cairo_new_path(cr);
-    cairo_arc(cr, cx, cy, r0 - 6, 0, 2 * M_PI);
+    cairo_arc(cr, cx, cy, r0 - 6.0 * a->ui.ui_scale, 0, 2 * M_PI);
     cairo_rgba(cr, th->hub); cairo_fill_preserve(cr);
-    cairo_rgba(cr, th->wedge_border); cairo_set_line_width(cr, 1.0); cairo_stroke(cr);
+    cairo_rgba(cr, th->border); cairo_set_line_width(cr, 1.2 * a->ui.ui_scale); cairo_stroke(cr);
 
-    /* Точка стика */
+    /* Тонкая направляющая мертвой зоны */
     cairo_new_path(cr);
+    cairo_arc(cr, cx, cy, (r0 - 6.0 * a->ui.ui_scale) * 0.35, 0, 2 * M_PI);
+    cairo_set_source_rgba(cr, th->fg[0], th->fg[1], th->fg[2], 0.08);
+    cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
+    cairo_stroke(cr);
+
+    /* Анимированная шляпка стика (Thumbstick puck) */
     double sx = is_left ? k->lx : k->rx, sy = is_left ? k->ly : k->ry;
-    cairo_arc(cr, cx + sx * (r0 - 16), cy + sy * (r0 - 16), 8 * a->ui.ui_scale, 0, 2 * M_PI);
-    cairo_rgba(cr, th->accent); cairo_fill(cr);
+    double max_travel = r0 - 18.0 * a->ui.ui_scale;
+    double puck_x = cx + sx * max_travel;
+    double puck_y = cy + sy * max_travel;
+
+    /* Трейс-линия отклонения стика */
+    if (hypotf((float)sx, (float)sy) > 0.15f) {
+        cairo_new_path(cr);
+        cairo_move_to(cr, cx, cy);
+        cairo_line_to(cr, puck_x, puck_y);
+        cairo_rgba(cr, th->accent);
+        cairo_set_line_width(cr, 2.0 * a->ui.ui_scale);
+        cairo_stroke(cr);
+    }
+
+    /* Шляпка стика */
+    cairo_new_path(cr);
+    cairo_arc(cr, puck_x, puck_y, 9.0 * a->ui.ui_scale, 0, 2 * M_PI);
+    cairo_rgba(cr, th->wedge);
+    cairo_fill_preserve(cr);
+    cairo_rgba(cr, th->accent);
+    cairo_set_line_width(cr, 2.0 * a->ui.ui_scale);
+    cairo_stroke(cr);
+
+    cairo_new_path(cr);
+    cairo_arc(cr, puck_x, puck_y, 3.5 * a->ui.ui_scale, 0, 2 * M_PI);
+    cairo_rgba(cr, th->accent);
+    cairo_fill(cr);
 }
 
 static void draw(App *a, cairo_t *cr)
@@ -596,42 +787,81 @@ static void draw(App *a, cairo_t *cr)
 
         /* Highlight-граница Plasma 6 */
         cairo_rgba(cr, th->border);
-        cairo_set_line_width(cr, 1.2);
+        cairo_set_line_width(cr, 1.2 * a->ui.ui_scale);
         cairo_stroke(cr);
     } else {
         cairo_rgba(cr, th->bg);
         cairo_fill_preserve(cr);
         cairo_rgba(cr, th->border);
-        cairo_set_line_width(cr, 1.0);
+        cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
         cairo_stroke(cr);
     }
 
     double R = 138.0 * a->ui.ui_scale;
     double r0 = 46.0 * a->ui.ui_scale;
-    double cy = lh * 0.44;
-    double margin = 50.0 * a->ui.ui_scale;
+    double cy = lh * 0.45;
+    double margin = 52.0 * a->ui.ui_scale;
     double lx = R + margin;
     double rx = lw - (R + margin);
 
     draw_ring(cr, a, lx, cy, R, r0, 1);
     draw_ring(cr, a, rx, cy, R, r0, 0);
 
-    /* Статус и подсказки */
-    char st[160]; char lang[16];
+    /* Индикатор ошибки конфигурации в правом верхнем углу */
+    if (a->cfg_has_error) {
+        double ex = lw - 24.0 * a->ui.ui_scale;
+        double ey = 24.0 * a->ui.ui_scale;
+        double er = 5.0 * a->ui.ui_scale;
+
+        /* Ореол */
+        cairo_new_path(cr);
+        cairo_arc(cr, ex, ey, er * 2.2, 0, 2 * M_PI);
+        cairo_set_source_rgba(cr, th->err[0], th->err[1], th->err[2], 0.25);
+        cairo_fill(cr);
+
+        /* Точка */
+        cairo_new_path(cr);
+        cairo_arc(cr, ex, ey, er, 0, 2 * M_PI);
+        cairo_rgba(cr, th->err);
+        cairo_fill(cr);
+    }
+
+    /* Статус и заголовок */
+    char lang[16];
     snprintf(lang, sizeof lang, "%s", k->lay[k->cur].name);
     for (char *c = lang; *c; c++) *c = (char)toupper((unsigned char)*c);
-    snprintf(st, sizeof st, "%s   %s   %s%s", lang,
-             k->sym ? "123" : (k->shift ? "ABC" : "abc"),
-             k->last[0] ? "\xe2\x86\x92 " : "", k->last);
 
-    text_c(cr, a, st, lw / 2.0, cy - 24 * a->ui.ui_scale, 22, th->fg, 1);
-    text_fit(cr, a, "LEFT stick: group\nRIGHT stick: flick, release to type",
-             lw / 2.0, cy + 24 * a->ui.ui_scale, 300 * a->ui.ui_scale, 13, th->fg_dim, 0);
+    char st[128];
+    snprintf(st, sizeof st, "%s  •  %s", lang, k->sym ? "123" : (k->shift ? "ABC" : "abc"));
+    text_c(cr, a, st, lw / 2.0, cy - 32 * a->ui.ui_scale, 20.0, th->fg, 1);
 
-    text_c(cr, a, "LT Shift   LB/B Backspace   RB/X/Y Space   RT/A/Start Enter",
-           lw / 2.0, lh - 56 * a->ui.ui_scale, 14, th->fg_dim, 0);
-    text_c(cr, a, "D-pad Arrows   L3 123/abc   R3 Layout   Select Hide   Toggle Hotkey",
-           lw / 2.0, lh - 28 * a->ui.ui_scale, 14, th->fg_dim, 0);
+    if (k->last[0]) {
+        char typed_preview[32];
+        snprintf(typed_preview, sizeof typed_preview, "→ %s", k->last);
+        text_c(cr, a, typed_preview, lw / 2.0, cy, 26.0, th->accent, 1);
+    } else {
+        text_fit(cr, a, "Select group with L-Stick\nFlick & release R-Stick to type",
+                 lw / 2.0, cy + 6.0 * a->ui.ui_scale, 260 * a->ui.ui_scale, 12.0, th->fg_dim, 0);
+    }
+
+    /* Бейджи быстрых подсказок кнопок в нижней части панели */
+    double badge_h = 24.0 * a->ui.ui_scale;
+    double by1 = lh - 56.0 * a->ui.ui_scale;
+    double by2 = lh - 28.0 * a->ui.ui_scale;
+
+    /* Строка 1 */
+    double bx = lw / 2.0 - 240.0 * a->ui.ui_scale;
+    draw_pill_badge(cr, a, "LT", "Shift", bx, by1, badge_h);
+    draw_pill_badge(cr, a, "B", "Backspace", bx + 95 * a->ui.ui_scale, by1, badge_h);
+    draw_pill_badge(cr, a, "X", "Space", bx + 225 * a->ui.ui_scale, by1, badge_h);
+    draw_pill_badge(cr, a, "A", "Enter", bx + 335 * a->ui.ui_scale, by1, badge_h);
+
+    /* Строка 2 */
+    double bx2 = lw / 2.0 - 260.0 * a->ui.ui_scale;
+    draw_pill_badge(cr, a, "D-pad", "Arrows", bx2, by2, badge_h);
+    draw_pill_badge(cr, a, "L3", "Symbols", bx2 + 115 * a->ui.ui_scale, by2, badge_h);
+    draw_pill_badge(cr, a, "R3", "Layout", bx2 + 225 * a->ui.ui_scale, by2, badge_h);
+    draw_pill_badge(cr, a, "Select", "Hide", bx2 + 330 * a->ui.ui_scale, by2, badge_h);
 }
 
 /* ======================= pads / grab / hotplug ======================= */
@@ -675,7 +905,6 @@ static void pads_resync(App *a)
         if (live[i] && a->pads[i].fd >= 0) continue;
         fprintf(stderr, "radialkb: pad removed: %s\n", a->pads[i].name);
         pad_close(&a->pads[i]);
-        /* Корректный сброс состояния при отключении геймпада (Hotplug) */
         kb_reset_input(&a->kb);
         reset_ime_state(a);
         a->chord_a = a->chord_b = a->chord_fired = 0;
@@ -1021,7 +1250,15 @@ int main(int argc, char **argv)
             theme_load(&A);
             radial_config_load(&A, layout_path, sizeof layout_path);
             A.kb.dirty = 1;
-            apply_visibility(&A);
+
+            /* Если размер окна изменился из-за scale/width/height - обновляем буферы */
+            int nw = A.ui.base_w * A.scale;
+            int nh = A.ui.base_h * A.scale;
+            if (A.visible && (A.bw != nw || A.bh != nh)) {
+                panel_show(&A);
+            } else {
+                apply_visibility(&A);
+            }
         }
 
         if (A.pads_dirty && now_ms() >= A.pads_rescan_at) {
