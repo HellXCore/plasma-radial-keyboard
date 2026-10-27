@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Radial Gamepad Keyboard
+Name[ru]=Радиальная клавиатура для геймпада
+Comment=Dual-stick radial on-screen keyboard for gamepads
+Icon=input-gamepad
+Exec=/usr/bin/plasma-radial-keyboard
+NoDisplay=true
+X-KDE-Wayland-VirtualKeyboard=true
+X-KDE-Wayland-Interfaces=zwp_input_method_v1,zwp_input_panel_v1
