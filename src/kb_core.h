@@ -447,7 +447,7 @@ typedef struct Kb {
     int hat[2];
     int dirty, hide;
     float ref[4];            /* положение стиков (lx, ly, rx, ry) на момент последней перерисовки */
-    uint32_t held; int64_t rep_at;
+    uint32_t held; int held_n; int64_t rep_at;   /* held_n: сколько кнопок удерживают held */
     char last[TOKLEN];
     KeyBinds binds;
     void *ud;
@@ -461,7 +461,7 @@ static void kb_reset_input(Kb *k)
     k->lx = k->ly = k->rx = k->ry = 0;
     memset(k->ref, 0, sizeof k->ref);
     k->sh_abs = k->sh_btn = k->rt_abs = k->rt_btn = k->rt_prev = k->shift = 0;
-    k->hat[0] = k->hat[1] = 0; k->held = 0; k->hide = 0; k->dirty = 1;
+    k->hat[0] = k->hat[1] = 0; k->held = 0; k->held_n = 0; k->hide = 0; k->dirty = 1;
 }
 
 static inline int kb_layer(const Kb *k) { return k->sym ? L_SYM : (k->shift ? L_UPPER : L_LOWER); }
@@ -479,8 +479,13 @@ static inline void kb_tap(Kb *k, uint32_t sym) { k->key(k->ud, sym); }
 
 static void kb_hold(Kb *k, uint32_t sym, int down)
 {
-    if (down) { k->key(k->ud, sym); k->held = sym; k->rep_at = now_ms() + 400; }
-    else if (k->held == sym) k->held = 0;
+    if (down) {
+        k->held_n = (k->held == sym) ? k->held_n + 1 : 1;
+        k->key(k->ud, sym); k->held = sym; k->rep_at = now_ms() + 400;
+    } else if (k->held == sym && --k->held_n <= 0) {
+        /* автоповтор останавливаем, только когда отпущены ВСЕ кнопки с этим действием */
+        k->held = 0; k->held_n = 0;
+    }
 }
 
 static int kb_tick(Kb *k, int64_t now)

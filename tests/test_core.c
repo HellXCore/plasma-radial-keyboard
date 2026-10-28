@@ -126,6 +126,14 @@ int main(void) {
         assert(chord_event(&s, BTN_MODE, 1) == CHORD_FIRE);
     }
 
+    /* Две кнопки на одно действие: повтор идёт, пока зажата хотя бы одна */
+    nkeys = 0;
+    kb_key(&kb, BTN_EAST, 1); kb_key(&kb, BTN_TL, 1);
+    kb_key(&kb, BTN_EAST, 0);
+    assert(kb.held == SYM_BACKSPACE);
+    kb_key(&kb, BTN_TL, 0);
+    assert(kb.held == 0);
+
     /* Дрожание стика в покое не должно вызывать перерисовку */
     kb_reset_input(&kb); kb.dirty = 0;
     left(0.005f, 0.0f); left(0.01f, 0.01f); left(-0.012f, 0.0f);
