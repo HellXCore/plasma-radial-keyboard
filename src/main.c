@@ -213,6 +213,7 @@ typedef struct {
     struct org_kde_kwin_blur_manager *kde_blur_mgr;
     struct org_kde_kwin_blur *kde_blur;
     int blur_applied;
+    int blur_w, blur_h;                  /* логический размер, для которого задан регион */
     int scale, buf_scale;
     Buf bufs[2]; int bw, bh;
     int field_active;
@@ -671,8 +672,12 @@ static void update_surface_blur(App *a)
     if (!a->surf || !a->comp) return;
 
     int want_blur = (a->th.bg_style == BG_ACRYLIC && a->visible);
-    if (want_blur == a->blur_applied) return;
+    /* Регион надо задавать заново и при смене размера панели (hot-reload) */
+    int resized = want_blur && a->blur_applied &&
+                  (a->blur_w != a->ui.base_w || a->blur_h != a->ui.base_h);
+    if (want_blur == a->blur_applied && !resized) return;
     a->blur_applied = want_blur;
+    if (want_blur) { a->blur_w = a->ui.base_w; a->blur_h = a->ui.base_h; }
 
     if (a->ext_bg_mgr) {
         if (want_blur) {
@@ -680,7 +685,7 @@ static void update_surface_blur(App *a)
                 a->ext_bg_surf = ext_background_effect_manager_v1_get_background_effect(a->ext_bg_mgr, a->surf);
             if (a->ext_bg_surf) {
                 struct wl_region *reg = wl_compositor_create_region(a->comp);
-                wl_region_add(reg, 0, 0, a->ui.base_w * a->scale, a->ui.base_h * a->scale);
+                wl_region_add(reg, 0, 0, a->ui.base_w, a->ui.base_h);   /* логические координаты, без * scale */
                 ext_background_effect_surface_v1_set_blur_region(a->ext_bg_surf, reg);
                 wl_region_destroy(reg);
             }
@@ -695,7 +700,7 @@ static void update_surface_blur(App *a)
                 a->kde_blur = org_kde_kwin_blur_manager_create(a->kde_blur_mgr, a->surf);
             if (a->kde_blur) {
                 struct wl_region *reg = wl_compositor_create_region(a->comp);
-                wl_region_add(reg, 0, 0, a->ui.base_w * a->scale, a->ui.base_h * a->scale);
+                wl_region_add(reg, 0, 0, a->ui.base_w, a->ui.base_h);   /* логические координаты, без * scale */
                 org_kde_kwin_blur_set_region(a->kde_blur, reg);
                 org_kde_kwin_blur_commit(a->kde_blur);
                 wl_region_destroy(reg);
