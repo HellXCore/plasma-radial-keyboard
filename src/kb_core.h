@@ -10,6 +10,7 @@
 #include <time.h>
 #include <wchar.h>
 #include <wctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -233,6 +234,7 @@ typedef struct {
     int fd;
     int grabbed;
     int grab_pending;
+    int grab_warned;
     int mn[ABS_CNT], mx[ABS_CNT];
     char name[64];
     char path[64];
@@ -293,6 +295,14 @@ static int pad_set_grab_safe(Pad *p, int grab)
             p->grabbed = 1;
             p->grab_pending = 0;
             return 1;
+        }
+        /* Захват не удался (EBUSY — устройство держит Steam/эмулятор). Сбрасываем
+           pending, чтобы не повторять ioctl на каждый пакет событий; следующая
+           попытка — при очередном показе панели. Предупреждение — один раз. */
+        p->grab_pending = 0;
+        if (errno == EBUSY && !p->grab_warned) {
+            p->grab_warned = 1;
+            fprintf(stderr, "radialkb: %s is grabbed by another client, input will not be exclusive\n", p->name);
         }
     } else {
         p->grab_pending = 0;

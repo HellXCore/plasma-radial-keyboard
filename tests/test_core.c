@@ -126,6 +126,15 @@ int main(void) {
         assert(chord_event(&s, BTN_MODE, 1) == CHORD_FIRE);
     }
 
+    /* Неудачный grab не оставляет grab_pending (иначе ioctl на каждый пакет событий) */
+    {
+        Pad pe; memset(&pe, 0, sizeof pe);
+        pe.fd = open("/dev/null", O_RDONLY); pe.grab_pending = 1;
+        int gr = pad_set_grab_safe(&pe, 1);
+        assert(gr == 0 && pe.grab_pending == 0 && !pe.grabbed);
+        close(pe.fd);
+    }
+
     /* Две кнопки на одно действие: повтор идёт, пока зажата хотя бы одна */
     nkeys = 0;
     kb_key(&kb, BTN_EAST, 1); kb_key(&kb, BTN_TL, 1);
