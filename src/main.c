@@ -1581,7 +1581,9 @@ static void im_activate(void *d, struct zwp_input_method_v1 *im, struct zwp_inpu
     a->user_hidden = 0;
     a->user_shown = 0;
     plasma_mode_load(a);
-    pads_resync(a);
+    /* pads_resync() здесь не нужен: геймпады уже отслеживаются при старте и по
+       inotify на /dev/input; glob + open() всех event-устройств при каждом фокусе
+       поля — лишняя работа. */
     apply_visibility(a);
 }
 
