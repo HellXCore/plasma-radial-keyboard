@@ -243,6 +243,8 @@ typedef struct {
     char layout_path[PATH_MAX + 256];
     char kwinrc[PATH_MAX + 64];
     char kdeglobals[PATH_MAX + 64];
+    int cli_invoke;                      /* -1, если режим не задан в командной строке/окружении */
+    char cli_layout[PATH_MAX + 256];     /* --layout FILE */
     int cfg_has_error;
     char cfg_err_msg[256];
     Theme th;
@@ -549,11 +551,24 @@ static int parse_combo(const char *spec, int *a, int *b)
     return (x > 0 && y > 0);
 }
 
+/* Параметры командной строки/окружения важнее config.ini, в том числе после hot-reload */
+static void apply_cli_overrides(App *a, char *layout_path, size_t n)
+{
+    if (a->cli_invoke >= 0) a->invoke = a->cli_invoke;
+    if (a->cli_layout[0]) snprintf(layout_path, n, "%s", a->cli_layout);
+}
+
 static void radial_config_load(App *a, char *layout_path, size_t n)
 {
     char path[PATH_MAX + 64];
     snprintf(path, sizeof path, "%s/radialkb/config.ini", a->cfg_dir);
     char v[128];
+
+    /* Сброс к значениям по умолчанию: ключ, удалённый из config.ini, должен
+       возвращать дефолт, а не оставлять значение прошлой загрузки. */
+    a->invoke = INVOKE_SMART;
+    a->chord.a = BTN_SELECT; a->chord.b = BTN_START;
+    snprintf(layout_path, n, "%s/radialkb/layouts.conf", a->cfg_dir);
 
     a->ui.ui_scale = 1.0;
     a->ui.font_scale = 1.0;
@@ -567,7 +582,7 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     a->cfg_err_msg[0] = 0;
 
     FILE *f_test = fopen(path, "r");
-    if (!f_test) return;
+    if (!f_test) { apply_cli_overrides(a, layout_path, n); return; }
     fclose(f_test);
 
     if (ini_get(path, "general", "invoke", v, sizeof v)) {
@@ -641,6 +656,8 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
 
     if (!custom_w) a->ui.base_w = (int)(DEFAULT_LW * a->ui.ui_scale);
     if (!custom_h) a->ui.base_h = (int)(DEFAULT_LH * a->ui.ui_scale);
+
+    apply_cli_overrides(a, layout_path, n);
 
     if (a->cfg_has_error) {
         fprintf(stderr, "radialkb: [CONFIG WARNING] %s (using fallback values)\n",
@@ -1573,7 +1590,7 @@ int main(int argc, char **argv)
     A.ino_input = A.wd_input = A.ino_cfg = A.wd_cfg = A.wd_radialkb = -1;
     A.cfg_dirty = 0; A.cfg_reload_at = 0;
     A.chord.a = BTN_SELECT; A.chord.b = BTN_START;
-    A.invoke = INVOKE_SMART;
+    A.invoke = INVOKE_SMART; A.cli_invoke = -1;
 
     const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
     if (xdg && *xdg) snprintf(A.cfg_dir, sizeof A.cfg_dir, "%s", xdg);
@@ -1588,18 +1605,19 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-grab")) A.grab_pref = 0;
-        else if (!strcmp(argv[i], "--manual")) A.invoke = INVOKE_MANUAL;
-        else if (!strcmp(argv[i], "--smart")) A.invoke = INVOKE_SMART;
-        else if (!strcmp(argv[i], "--auto")) A.invoke = INVOKE_AUTO;
+        else if (!strcmp(argv[i], "--manual")) A.cli_invoke = A.invoke = INVOKE_MANUAL;
+        else if (!strcmp(argv[i], "--smart")) A.cli_invoke = A.invoke = INVOKE_SMART;
+        else if (!strcmp(argv[i], "--auto")) A.cli_invoke = A.invoke = INVOKE_AUTO;
         else if (!strcmp(argv[i], "--layout") && i + 1 < argc) {
-            snprintf(A.layout_path, sizeof A.layout_path, "%s", argv[++i]);
+            snprintf(A.cli_layout, sizeof A.cli_layout, "%s", argv[++i]);
+            snprintf(A.layout_path, sizeof A.layout_path, "%s", A.cli_layout);
         } else {
             fprintf(stderr, "usage: %s [--no-grab] [--manual|--smart|--auto] [--layout FILE]\n", argv[0]);
             return 2;
         }
     }
     if (getenv("RADIALKB_NO_GRAB")) A.grab_pref = 0;
-    if (getenv("RADIALKB_MANUAL")) A.invoke = INVOKE_MANUAL;
+    if (getenv("RADIALKB_MANUAL")) A.cli_invoke = A.invoke = INVOKE_MANUAL;
 
     plasma_mode_load(&A);
     theme_load(&A);
