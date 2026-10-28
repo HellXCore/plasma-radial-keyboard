@@ -864,8 +864,10 @@ static void sector_pos(double cx, double cy, double r, int sector, double *x, do
     *x = cx + r * sin(th); *y = cy - r * cos(th);
 }
 
-static void draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *desc,
-                            double x, double y, double h)
+/* Рисует «пилюлю» с названием кнопки и подписью. При measure=1 только измеряет.
+   Возвращает полную ширину (пилюля + подпись), чтобы ряд можно было выложить без наложений. */
+static double draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *desc,
+                              double x, double y, double h, int measure)
 {
     const Theme *th = &a->th;
     double r = h / 2.0;
@@ -882,37 +884,78 @@ static void draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *de
     double pad_x = 8.0 * a->ui.ui_scale;
     double box_w = kw + pad_x * 2;
     if (box_w < h) box_w = h;
+    double total = box_w;
 
-    cairo_new_path(cr);
-    cairo_arc(cr, x + box_w - r, y + r, r, -M_PI / 2, M_PI / 2);
-    cairo_arc(cr, x + r, y + r, r, M_PI / 2, 1.5 * M_PI);
-    cairo_close_path(cr);
-
-    cairo_rgba(cr, th->wedge);
-    cairo_fill_preserve(cr);
-    cairo_rgba(cr, th->border);
-    cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
-    cairo_stroke(cr);
-
-    cairo_rgba(cr, th->fg);
-    cairo_move_to(cr, x + (box_w - kw) / 2.0, y + (h - kh) / 2.0);
-    pango_cairo_show_layout(cr, lk);
-    pango_font_description_free(fdk); g_object_unref(lk);
-
+    PangoLayout *ld = NULL;
+    PangoFontDescription *fdd = NULL;
+    int dw = 0, dh = 0;
     if (desc && *desc) {
-        PangoLayout *ld = pango_cairo_create_layout(cr);
+        ld = pango_cairo_create_layout(cr);
         snprintf(fdesc, sizeof fdesc, "%s Regular", a->ui.font_family);
-        PangoFontDescription *fdd = pango_font_description_from_string(fdesc);
+        fdd = pango_font_description_from_string(fdesc);
         pango_font_description_set_absolute_size(fdd, (h * 0.50) * a->ui.font_scale * PANGO_SCALE);
         pango_layout_set_font_description(ld, fdd);
         pango_layout_set_text(ld, desc, -1);
-        int dw, dh; pango_layout_get_pixel_size(ld, &dw, &dh);
-
-        cairo_rgba(cr, th->fg_dim);
-        cairo_move_to(cr, x + box_w + 6.0 * a->ui.ui_scale, y + (h - dh) / 2.0);
-        pango_cairo_show_layout(cr, ld);
-        pango_font_description_free(fdd); g_object_unref(ld);
+        pango_layout_get_pixel_size(ld, &dw, &dh);
+        total += 6.0 * a->ui.ui_scale + dw;
     }
+
+    if (!measure) {
+        cairo_new_path(cr);
+        cairo_arc(cr, x + box_w - r, y + r, r, -M_PI / 2, M_PI / 2);
+        cairo_arc(cr, x + r, y + r, r, M_PI / 2, 1.5 * M_PI);
+        cairo_close_path(cr);
+
+        cairo_rgba(cr, th->wedge);
+        cairo_fill_preserve(cr);
+        cairo_rgba(cr, th->border);
+        cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
+        cairo_stroke(cr);
+
+        cairo_rgba(cr, th->fg);
+        cairo_move_to(cr, x + (box_w - kw) / 2.0, y + (h - kh) / 2.0);
+        pango_cairo_show_layout(cr, lk);
+
+        if (ld) {
+            cairo_rgba(cr, th->fg_dim);
+            cairo_move_to(cr, x + box_w + 6.0 * a->ui.ui_scale, y + (h - dh) / 2.0);
+            pango_cairo_show_layout(cr, ld);
+        }
+    }
+
+    pango_font_description_free(fdk); g_object_unref(lk);
+    if (ld) { pango_font_description_free(fdd); g_object_unref(ld); }
+    return total;
+}
+
+/* Подписи кнопок — те же имена, что принимает map_btn_name() в config.ini */
+static const char *btn_label(int code)
+{
+    switch (code) {
+        case BTN_SOUTH: return "A";   case BTN_EAST:  return "B";
+        case BTN_WEST:  return "X";   case BTN_NORTH: return "Y";
+        case BTN_TL: return "LB";     case BTN_TR: return "RB";
+        case BTN_TL2: return "LT";    case BTN_TR2: return "RT";
+        case BTN_THUMBL: return "L3"; case BTN_THUMBR: return "R3";
+        case BTN_SELECT: return "Select"; case BTN_START: return "Start";
+        case BTN_MODE: return "Guide";
+        default: return "?";
+    }
+}
+
+static const char *bind_label(const int *arr, int n) { return n > 0 ? btn_label(arr[0]) : "-"; }
+
+typedef struct { const char *key, *desc; } Badge;
+
+/* Ряд подсказок по центру: ширина считается заранее, поэтому длинные имена не налезают друг на друга */
+static void draw_badge_row(cairo_t *cr, App *a, const Badge *b, int n, double lw, double y, double h)
+{
+    double gap = 18.0 * a->ui.ui_scale, total = 0;
+    for (int i = 0; i < n; i++)
+        total += draw_pill_badge(cr, a, b[i].key, b[i].desc, 0, 0, h, 1) + (i ? gap : 0);
+    double x = lw / 2.0 - total / 2.0;
+    for (int i = 0; i < n; i++)
+        x += draw_pill_badge(cr, a, b[i].key, b[i].desc, x, y, h, 0) + gap;
 }
 
 static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, double r0, int is_left)
@@ -1213,17 +1256,21 @@ static void draw(App *a, cairo_t *cr)
     double by1 = lh - 56.0 * a->ui.ui_scale;
     double by2 = lh - 28.0 * a->ui.ui_scale;
 
-    double bx = lw / 2.0 - 240.0 * a->ui.ui_scale;
-    draw_pill_badge(cr, a, "LT", "Shift", bx, by1, badge_h);
-    draw_pill_badge(cr, a, "B", "Backspace", bx + 95 * a->ui.ui_scale, by1, badge_h);
-    draw_pill_badge(cr, a, "X", "Space", bx + 225 * a->ui.ui_scale, by1, badge_h);
-    draw_pill_badge(cr, a, "A", "Enter", bx + 335 * a->ui.ui_scale, by1, badge_h);
-
-    double bx2 = lw / 2.0 - 260.0 * a->ui.ui_scale;
-    draw_pill_badge(cr, a, "D-pad", "Arrows", bx2, by2, badge_h);
-    draw_pill_badge(cr, a, "L3", "Symbols", bx2 + 115 * a->ui.ui_scale, by2, badge_h);
-    draw_pill_badge(cr, a, "R3", "Layout", bx2 + 225 * a->ui.ui_scale, by2, badge_h);
-    draw_pill_badge(cr, a, "Select", "Hide", bx2 + 330 * a->ui.ui_scale, by2, badge_h);
+    const KeyBinds *kbn = &k->binds;
+    Badge row1[] = {
+        { bind_label(kbn->shift, kbn->n_shift),         "Shift" },
+        { bind_label(kbn->backspace, kbn->n_backspace), "Backspace" },
+        { bind_label(kbn->space, kbn->n_space),         "Space" },
+        { bind_label(kbn->enter, kbn->n_enter),         "Enter" },
+    };
+    Badge row2[] = {
+        { "D-pad",                                      "Arrows" },
+        { bind_label(kbn->sym, kbn->n_sym),             "Symbols" },
+        { bind_label(kbn->layout, kbn->n_layout),       "Layout" },
+        { bind_label(kbn->hide, kbn->n_hide),           "Hide" },
+    };
+    draw_badge_row(cr, a, row1, 4, lw, by1, badge_h);
+    draw_badge_row(cr, a, row2, 4, lw, by2, badge_h);
 }
 
 /* ======================= pads / grab / hotplug ======================= */

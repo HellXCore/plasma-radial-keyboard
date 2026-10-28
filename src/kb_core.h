@@ -73,7 +73,7 @@ static inline int bind_contains(const int *arr, int n, int code)
 static inline void binds_set_defaults(KeyBinds *b)
 {
     b->n_backspace = 2; b->backspace[0] = BTN_EAST; b->backspace[1] = BTN_TL;
-    b->n_space = 3;     b->space[0] = BTN_NORTH; b->space[1] = BTN_WEST; b->space[2] = BTN_TR;
+    b->n_space = 3;     b->space[0] = BTN_WEST; b->space[1] = BTN_NORTH; b->space[2] = BTN_TR;
     b->n_enter = 2;     b->enter[0] = BTN_SOUTH; b->enter[1] = BTN_START;
     b->n_shift = 1;     b->shift[0] = BTN_TL2;
     b->n_sym = 1;       b->sym[0] = BTN_THUMBL;
