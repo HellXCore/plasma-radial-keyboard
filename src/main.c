@@ -1723,10 +1723,14 @@ int main(int argc, char **argv)
 
     while (A.running) {
         while (wl_display_prepare_read(A.dpy) != 0) wl_display_dispatch_pending(A.dpy);
-        if (wl_display_flush(A.dpy) < 0 && errno != EAGAIN) { wl_display_cancel_read(A.dpy); break; }
+        short wl_events = POLLIN;
+        if (wl_display_flush(A.dpy) < 0) {
+            if (errno != EAGAIN) { wl_display_cancel_read(A.dpy); break; }
+            wl_events |= POLLOUT;   /* сокет переполнен: ждём возможности дописать запросы */
+        }
 
         struct pollfd fds[4 + MAXPADS]; int map[4 + MAXPADS]; int nf = 0;
-        fds[nf] = (struct pollfd){ wfd, POLLIN, 0 }; map[nf++] = -1;
+        fds[nf] = (struct pollfd){ wfd, wl_events, 0 }; map[nf++] = -1;
         int i_in = -1, i_cfg = -1;
         if (A.ino_input >= 0) { i_in = nf; fds[nf] = (struct pollfd){ A.ino_input, POLLIN, 0 }; map[nf++] = -2; }
         if (A.ino_cfg >= 0)   { i_cfg = nf; fds[nf] = (struct pollfd){ A.ino_cfg, POLLIN, 0 }; map[nf++] = -3; }
