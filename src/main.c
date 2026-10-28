@@ -562,6 +562,10 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     a->ui.ui_scale = 1.0;
     a->ui.font_scale = 1.0;
     snprintf(a->ui.font_family, sizeof a->ui.font_family, "Noto Sans");
+    /* Размеры по умолчанию задаём ДО раннего return: без config.ini они иначе
+       оставались 0, и буфер 0x0 не создавался (панель не показывалась). */
+    a->ui.base_w = DEFAULT_LW;
+    a->ui.base_h = DEFAULT_LH;
     binds_set_defaults(&a->kb.binds);
     a->cfg_has_error = 0;
     a->cfg_err_msg[0] = 0;
