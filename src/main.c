@@ -1390,7 +1390,9 @@ static void ctx_surrounding(void *d, struct zwp_input_method_context_v1 *c, cons
         a->surrounding[0] = '\0';
     }
     a->field_active = 1;
-    a->user_hidden = 0;
+    /* user_hidden здесь НЕ сбрасываем: surrounding_text приходит при каждой правке
+       текста, и панель, скрытая вручную, всплывала бы снова. Сброс — только при
+       смене фокуса (im_activate/im_deactivate) или по хоткею show. */
     apply_visibility(a);
 }
 
