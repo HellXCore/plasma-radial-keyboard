@@ -252,6 +252,8 @@ typedef struct {
     char cfg_err_msg[256];
     Theme th;
     UiConfig ui;
+    PangoFontDescription *fd_cache[2];   /* regular, bold */
+    char fd_family[128];
 } App;
 
 static App A;
@@ -822,14 +824,32 @@ static int buf_create(App *a, Buf *b, int w, int h)
 static void cairo_rgba(cairo_t *cr, const double *c)
 { cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]); }
 
+/* Описание шрифта собирается один раз на семейство; здесь только копия с нужным
+   размером (без разбора строки pango_font_description_from_string на каждый текст) */
+static PangoFontDescription *font_make(App *a, int bold, double px_size)
+{
+    if (strcmp(a->fd_family, a->ui.font_family) != 0) {
+        for (int i = 0; i < 2; i++) {
+            if (a->fd_cache[i]) { pango_font_description_free(a->fd_cache[i]); a->fd_cache[i] = NULL; }
+        }
+        snprintf(a->fd_family, sizeof a->fd_family, "%s", a->ui.font_family);
+    }
+    int i = bold ? 1 : 0;
+    if (!a->fd_cache[i]) {
+        char desc[192];
+        snprintf(desc, sizeof desc, "%s %s", a->ui.font_family, bold ? "Bold" : "Regular");
+        a->fd_cache[i] = pango_font_description_from_string(desc);
+    }
+    PangoFontDescription *fd = pango_font_description_copy(a->fd_cache[i]);
+    pango_font_description_set_absolute_size(fd, px_size * PANGO_SCALE);
+    return fd;
+}
+
 static void text_c(cairo_t *cr, App *a, const char *s, double x, double y, double px,
                    const double *col, int bold)
 {
     PangoLayout *l = pango_cairo_create_layout(cr);
-    char fdesc[192];
-    snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, bold ? "Bold" : "Regular");
-    PangoFontDescription *fd = pango_font_description_from_string(fdesc);
-    pango_font_description_set_absolute_size(fd, px * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
+    PangoFontDescription *fd = font_make(a, bold, px * a->ui.ui_scale * a->ui.font_scale);
     pango_layout_set_font_description(l, fd);
     pango_layout_set_text(l, s, -1);
     int w, h; pango_layout_get_pixel_size(l, &w, &h);
@@ -845,10 +865,7 @@ static void draw_optical_text(cairo_t *cr, App *a, const char *s, double cx, dou
                               double pt_size, const double *col, int bold, int optical_center)
 {
     PangoLayout *l = pango_cairo_create_layout(cr);
-    char fdesc[192];
-    snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, bold ? "Bold" : "Regular");
-    PangoFontDescription *fd = pango_font_description_from_string(fdesc);
-    pango_font_description_set_absolute_size(fd, pt_size * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
+    PangoFontDescription *fd = font_make(a, bold, pt_size * a->ui.ui_scale * a->ui.font_scale);
     pango_layout_set_font_description(l, fd);
     pango_layout_set_text(l, s, -1);
 
@@ -876,10 +893,7 @@ static void text_fit(cairo_t *cr, App *a, const char *s, double x, double y, dou
                      const double *col, int bold)
 {
     PangoLayout *l = pango_cairo_create_layout(cr);
-    char fdesc[192];
-    snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, bold ? "Bold" : "Regular");
-    PangoFontDescription *fd = pango_font_description_from_string(fdesc);
-    pango_font_description_set_absolute_size(fd, px * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
+    PangoFontDescription *fd = font_make(a, bold, px * a->ui.ui_scale * a->ui.font_scale);
     pango_layout_set_font_description(l, fd);
     pango_layout_set_width(l, (int)(maxw * PANGO_SCALE));
     pango_layout_set_alignment(l, PANGO_ALIGN_CENTER);
@@ -918,10 +932,7 @@ static double draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *
     double r = h / 2.0;
 
     PangoLayout *lk = pango_cairo_create_layout(cr);
-    char fdesc[192];
-    snprintf(fdesc, sizeof fdesc, "%s Bold", a->ui.font_family);
-    PangoFontDescription *fdk = pango_font_description_from_string(fdesc);
-    pango_font_description_set_absolute_size(fdk, (h * 0.52) * a->ui.font_scale * PANGO_SCALE);
+    PangoFontDescription *fdk = font_make(a, 1, (h * 0.52) * a->ui.font_scale);
     pango_layout_set_font_description(lk, fdk);
     pango_layout_set_text(lk, key, -1);
     int kw, kh; pango_layout_get_pixel_size(lk, &kw, &kh);
@@ -936,9 +947,7 @@ static double draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *
     int dw = 0, dh = 0;
     if (desc && *desc) {
         ld = pango_cairo_create_layout(cr);
-        snprintf(fdesc, sizeof fdesc, "%s Regular", a->ui.font_family);
-        fdd = pango_font_description_from_string(fdesc);
-        pango_font_description_set_absolute_size(fdd, (h * 0.50) * a->ui.font_scale * PANGO_SCALE);
+        fdd = font_make(a, 0, (h * 0.50) * a->ui.font_scale);
         pango_layout_set_font_description(ld, fdd);
         pango_layout_set_text(ld, desc, -1);
         pango_layout_get_pixel_size(ld, &dw, &dh);
@@ -1071,10 +1080,7 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
                     }
 
                     PangoLayout *tl = pango_cairo_create_layout(cr);
-                    char fdesc[192];
-                    snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, hot ? "Bold" : "Regular");
-                    PangoFontDescription *tfd = pango_font_description_from_string(fdesc);
-                    pango_font_description_set_absolute_size(tfd, 14.5 * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);  /* как при отрисовке */
+                    PangoFontDescription *tfd = font_make(a, hot, 14.5 * a->ui.ui_scale * a->ui.font_scale);
                     pango_layout_set_font_description(tl, tfd);
                     pango_layout_set_text(tl, test_line, -1);
                     int tw, th_h; pango_layout_get_pixel_size(tl, &tw, &th_h);
