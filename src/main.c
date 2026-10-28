@@ -1922,6 +1922,13 @@ int main(int argc, char **argv)
     if (A.kde_blur) org_kde_kwin_blur_release(A.kde_blur);
     if (A.kde_blur_mgr) org_kde_kwin_blur_manager_destroy(A.kde_blur_mgr);
     if (A.ctx) zwp_input_method_context_v1_destroy(A.ctx);
+    /* Явно освобождаем прокси и буферы до disconnect: сначала роль, потом поверхность */
+    if (A.psurf) zwp_input_panel_surface_v1_destroy(A.psurf);
+    if (A.surf) wl_surface_destroy(A.surf);
+    for (int i = 0; i < 2; i++) buf_destroy(&A.bufs[i]);
+    wl_registry_destroy(reg);
+    wl_display_flush(A.dpy);
+    ini_cache_flush();
     if (A.ino_input >= 0) close(A.ino_input);
     if (A.ino_cfg >= 0) close(A.ino_cfg);
     wl_display_disconnect(A.dpy);
