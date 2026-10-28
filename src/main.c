@@ -228,6 +228,8 @@ typedef struct {
     Kb kb; Pad pads[MAXPADS]; int npads;
     int grab_pref; volatile sig_atomic_t running;
     int64_t last_draw;
+    struct wl_callback *frame_cb;        /* ожидающий callback первого кадра */
+    int64_t map_deadline;                /* запасной срок, если callback не придёт */
     int plasma_mode;
     int invoke;
     int user_shown;
@@ -1284,15 +1286,22 @@ static void pads_close_all(App *a)
 }
 
 /* ======================= panel show / hide / redraw ======================= */
+static void panel_mark_mapped(App *a)
+{
+    a->map_deadline = 0;
+    if (a->visible && !a->mapped) {
+        a->mapped = 1;
+        pads_apply_grab(a);
+    }
+}
+
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time)
 {
     (void)time;
     App *a = data;
     wl_callback_destroy(cb);
-    if (a->visible && !a->mapped) {
-        a->mapped = 1;
-        pads_apply_grab(a);
-    }
+    if (a->frame_cb == cb) a->frame_cb = NULL;
+    panel_mark_mapped(a);
 }
 
 static const struct wl_callback_listener frame_listener = { frame_done };
@@ -1320,8 +1329,13 @@ static void app_redraw(App *a)
         wl_surface_set_buffer_scale(a->surf, a->scale); a->buf_scale = a->scale;
     }
 
-    struct wl_callback *cb = wl_surface_frame(a->surf);
-    wl_callback_add_listener(cb, &frame_listener, a);
+    /* frame-callback нужен только чтобы узнать, что панель показана (mapped).
+       Если композитор его не пришлёт, map_deadline в главном цикле подстрахует. */
+    if (!a->mapped && !a->frame_cb) {
+        a->frame_cb = wl_surface_frame(a->surf);
+        wl_callback_add_listener(a->frame_cb, &frame_listener, a);
+        a->map_deadline = now_ms() + 150;
+    }
 
     wl_surface_attach(a->surf, b->buf, 0, 0);
     wl_surface_damage(a->surf, 0, 0, INT32_MAX, INT32_MAX);
@@ -1353,6 +1367,8 @@ static void panel_hide(App *a)
     if (!a->visible && !a->surf) return;
     a->visible = 0;
     a->mapped = 0;
+    a->map_deadline = 0;
+    if (a->frame_cb) { wl_callback_destroy(a->frame_cb); a->frame_cb = NULL; }
     update_surface_blur(a);
     pads_apply_grab(a);
     if (a->surf) {
@@ -1686,6 +1702,11 @@ int main(int argc, char **argv)
             int wait = since >= 16 ? 0 : 16 - since;
             if (timeout < 0 || wait < timeout) timeout = wait;
         }
+        if (A.visible && !A.mapped && A.map_deadline) {
+            int wait = (int)(A.map_deadline - now);
+            if (wait < 0) wait = 0;
+            if (timeout < 0 || wait < timeout) timeout = wait;
+        }
         if (A.pads_dirty) {
             int wait = (int)(A.pads_rescan_at - now);
             if (wait < 0) wait = 0;
@@ -1703,6 +1724,10 @@ int main(int argc, char **argv)
             if (wl_display_read_events(A.dpy) < 0) break;
         } else wl_display_cancel_read(A.dpy);
         if (wl_display_dispatch_pending(A.dpy) < 0) break;
+
+        /* callback первого кадра не пришёл — не оставляем клавиатуру навсегда «неактивной» */
+        if (A.visible && !A.mapped && A.map_deadline && now_ms() >= A.map_deadline)
+            panel_mark_mapped(&A);
 
         if (r > 0 && i_in >= 0 && (fds[i_in].revents & POLLIN)) {
             drain_inotify(A.ino_input);
