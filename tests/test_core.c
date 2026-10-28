@@ -126,6 +126,19 @@ int main(void) {
         assert(chord_event(&s, BTN_MODE, 1) == CHORD_FIRE);
     }
 
+    /* Дрожание стика в покое не должно вызывать перерисовку */
+    kb_reset_input(&kb); kb.dirty = 0;
+    left(0.005f, 0.0f); left(0.01f, 0.01f); left(-0.012f, 0.0f);
+    assert(!kb.dirty);
+    left(0.5f, 0.0f);
+    assert(kb.dirty);
+    kb.dirty = 0; right(0.01f, 0.0f);
+    assert(!kb.dirty);
+    right(1, 0); assert(kb.dirty);
+    kb.dirty = 0; right(0, 0);
+    assert(kb.dirty);                 /* отпускание стика всегда перерисовывается */
+    kb_reset_input(&kb);
+
     puts("all core tests passed");
     return 0;
 }

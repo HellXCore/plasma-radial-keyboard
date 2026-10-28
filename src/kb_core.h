@@ -203,6 +203,9 @@ static inline int64_t now_ms(void)
 enum { ST_NONE = 0, ST_CHANGED, ST_RELEASED };
 typedef struct { float peak; int sel; int active; } Stick;
 
+/* Минимальный сдвиг стика, ради которого стоит перерисовывать кадр (шум АЦП игнорируем) */
+#define STICK_REDRAW_EPS 0.02f
+
 static inline int sector_of(float x, float y)
 {
     float a = atan2f(x, -y);
@@ -443,6 +446,7 @@ typedef struct Kb {
     float lx, ly, rx, ry;
     int hat[2];
     int dirty, hide;
+    float ref[4];            /* положение стиков (lx, ly, rx, ry) на момент последней перерисовки */
     uint32_t held; int64_t rep_at;
     char last[TOKLEN];
     KeyBinds binds;
@@ -455,6 +459,7 @@ static void kb_reset_input(Kb *k)
 {
     k->L = (Stick){0, -1, 0}; k->R = (Stick){0, -1, 0};
     k->lx = k->ly = k->rx = k->ry = 0;
+    memset(k->ref, 0, sizeof k->ref);
     k->sh_abs = k->sh_btn = k->rt_abs = k->rt_btn = k->rt_prev = k->shift = 0;
     k->hat[0] = k->hat[1] = 0; k->held = 0; k->hide = 0; k->dirty = 1;
 }
@@ -539,15 +544,25 @@ static void kb_key(Kb *k, int code, int v)
 static void kb_abs(Kb *k, const Pad *p, int code, int v)
 {
     switch (code) {
-        case ABS_X: case ABS_Y:
-            if (code == ABS_X) k->lx = pad_norm(p, code, v); else k->ly = pad_norm(p, code, v);
-            if (stick_update(&k->L, k->lx, k->ly) == ST_CHANGED) k->group = k->L.sel;
-            break;
-        case ABS_RX: case ABS_RY:
-            if (code == ABS_RX) k->rx = pad_norm(p, code, v); else k->ry = pad_norm(p, code, v);
-            if (stick_update(&k->R, k->rx, k->ry) == ST_RELEASED && k->R.sel >= 0)
-                kb_commit_slot(k, k->R.sel);
-            break;
+        case ABS_X: case ABS_Y: {
+            float *dst = (code == ABS_X) ? &k->lx : &k->ly;
+            float *ref = &k->ref[code == ABS_X ? 0 : 1];
+            *dst = pad_norm(p, code, v);
+            int st = stick_update(&k->L, k->lx, k->ly);
+            if (st == ST_CHANGED) k->group = k->L.sel;
+            /* перерисовка — при смене состояния или заметном сдвиге, но не от шума в покое */
+            if (st != ST_NONE || fabsf(*dst - *ref) > STICK_REDRAW_EPS) { k->dirty = 1; *ref = *dst; }
+            return;
+        }
+        case ABS_RX: case ABS_RY: {
+            float *dst = (code == ABS_RX) ? &k->rx : &k->ry;
+            float *ref = &k->ref[code == ABS_RX ? 2 : 3];
+            *dst = pad_norm(p, code, v);
+            int st = stick_update(&k->R, k->rx, k->ry);
+            if (st == ST_RELEASED && k->R.sel >= 0) kb_commit_slot(k, k->R.sel);
+            if (st != ST_NONE || fabsf(*dst - *ref) > STICK_REDRAW_EPS) { k->dirty = 1; *ref = *dst; }
+            return;
+        }
         case ABS_Z:
             k->sh_abs = pad_norm01(p, code, v) > 0.5f; k->shift = k->sh_abs || k->sh_btn; break;
         case ABS_RZ:
