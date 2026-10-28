@@ -1275,6 +1275,14 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time)
 
 static const struct wl_callback_listener frame_listener = { frame_done };
 
+/* Есть ли свободный SHM-буфер (иначе рисовать нечем — ждём wl_buffer.release) */
+static inline int has_free_buf(const App *a)
+{
+    for (int i = 0; i < 2; i++)
+        if (a->bufs[i].buf && !a->bufs[i].busy) return 1;
+    return 0;
+}
+
 static void app_redraw(App *a)
 {
     if (!a->visible) return;
@@ -1637,7 +1645,9 @@ int main(int argc, char **argv)
         int is_armed = input_armed_strict(A.visible, A.mapped, A.ctx != NULL);
         int rep = is_armed ? kb_tick(&A.kb, now) : -1;
         if (rep >= 0) timeout = rep;
-        if (A.visible && A.kb.dirty) {
+        /* Без свободного буфера таймаут не ставим: poll проснётся по wl_buffer.release
+           через сокет Wayland. Иначе poll(0) превращается в busy-loop на 100% CPU. */
+        if (A.visible && A.kb.dirty && has_free_buf(&A)) {
             int since = (int)(now - A.last_draw);
             int wait = since >= 16 ? 0 : 16 - since;
             if (timeout < 0 || wait < timeout) timeout = wait;
