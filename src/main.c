@@ -1029,13 +1029,13 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
                     char fdesc[192];
                     snprintf(fdesc, sizeof fdesc, "%s %s", a->ui.font_family, hot ? "Bold" : "Regular");
                     PangoFontDescription *tfd = pango_font_description_from_string(fdesc);
-                    pango_font_description_set_absolute_size(tfd, 13.5 * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);
+                    pango_font_description_set_absolute_size(tfd, 14.5 * a->ui.ui_scale * a->ui.font_scale * PANGO_SCALE);  /* как при отрисовке */
                     pango_layout_set_font_description(tl, tfd);
                     pango_layout_set_text(tl, test_line, -1);
                     int tw, th_h; pango_layout_get_pixel_size(tl, &tw, &th_h);
                     pango_font_description_free(tfd); g_object_unref(tl);
 
-                    if (tw <= maxw * a->ui.ui_scale * 0.95) {
+                    if (tw <= maxw * 0.95) {   /* maxw уже в масштабированных пикселях */
                         snprintf(line1, sizeof(line1), "%s", test_line);
                     } else {
                         snprintf(line1, sizeof(line1), "%s  %s", tokens[0], tokens[1]);
