@@ -1520,13 +1520,42 @@ static void drain_inotify(int fd)
     while (read(fd, buf, sizeof buf) > 0) {}
 }
 
+/* Разбирает события каталога конфигов и возвращает 1, только если затронут
+   файл, который мы реально читаем (иначе любая запись в ~/.config будила бы
+   перезагрузку). Буфер выровнен под struct inotify_event. */
+static int cfg_events_relevant(App *a)
+{
+    char buf[INOTIFY_BUFSZ] __attribute__((aligned(__alignof__(struct inotify_event))));
+    const char *lay = strrchr(a->layout_path, '/');
+    lay = lay ? lay + 1 : a->layout_path;
+    int hit = 0;
+    ssize_t len;
+    while ((len = read(a->ino_cfg, buf, sizeof buf)) > 0) {
+        for (char *p = buf; p < buf + len; ) {
+            const struct inotify_event *ev = (const struct inotify_event *)p;
+            if (ev->mask & IN_Q_OVERFLOW) hit = 1;
+            else if (ev->len > 0) {
+                if (!strcmp(ev->name, "kwinrc") || !strcmp(ev->name, "kdeglobals") ||
+                    !strcmp(ev->name, "radialkb"))
+                    hit = 1;
+                else if (ev->wd == a->wd_radialkb &&
+                         (!strcmp(ev->name, "config.ini") || !strcmp(ev->name, lay)))
+                    hit = 1;
+            }
+            p += sizeof *ev + ev->len;
+        }
+    }
+    return hit;
+}
+
 static void setup_cfg_watches(App *a)
 {
     if (a->ino_cfg < 0) {
         a->ino_cfg = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
         if (a->ino_cfg < 0) return;
     }
-    uint32_t mask = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_MODIFY | IN_ATTRIB | IN_DELETE;
+    /* KConfig и большинство редакторов пишут атомарно (rename) — IN_MODIFY/IN_ATTRIB не нужны */
+    uint32_t mask = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE;
     if (a->wd_cfg < 0) {
         a->wd_cfg = inotify_add_watch(a->ino_cfg, a->cfg_dir, mask);
     }
@@ -1659,10 +1688,12 @@ int main(int argc, char **argv)
             A.pads_rescan_at = now_ms() + 250;
         }
         if (r > 0 && i_cfg >= 0 && (fds[i_cfg].revents & POLLIN)) {
-            drain_inotify(A.ino_cfg);
+            int relevant = cfg_events_relevant(&A);
             setup_cfg_watches(&A);
-            A.cfg_dirty = 1;
-            A.cfg_reload_at = now_ms() + 80;
+            if (relevant) {
+                A.cfg_dirty = 1;
+                A.cfg_reload_at = now_ms() + 80;
+            }
         }
 
         if (A.pads_dirty && now_ms() >= A.pads_rescan_at) {
