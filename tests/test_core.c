@@ -104,6 +104,28 @@ int main(void) {
     assert(!input_armed_strict(1, 1, 0));
     assert( input_armed_strict(1, 1, 1));
 
+    /* Аккорд Select+Start: порядок нажатия не важен, одиночный тап проходит при отпускании */
+    {
+        Chord c; memset(&c, 0, sizeof c); c.a = BTN_SELECT; c.b = BTN_START;
+        assert(chord_event(&c, BTN_SELECT, 1) == CHORD_SWALLOW);
+        assert(chord_event(&c, BTN_START,  1) == CHORD_FIRE);
+        assert(chord_event(&c, BTN_START,  2) == CHORD_SWALLOW);
+        assert(chord_event(&c, BTN_START,  0) == CHORD_SWALLOW);
+        assert(chord_event(&c, BTN_SELECT, 0) == CHORD_SWALLOW);
+        assert(chord_event(&c, BTN_START,  1) == CHORD_SWALLOW);   /* Start первым — не Enter */
+        assert(chord_event(&c, BTN_SELECT, 1) == CHORD_FIRE);
+        assert(chord_event(&c, BTN_SELECT, 0) == CHORD_SWALLOW);
+        assert(chord_event(&c, BTN_START,  0) == CHORD_SWALLOW);
+        assert(chord_event(&c, BTN_SELECT, 1) == CHORD_SWALLOW);   /* одиночный тап */
+        assert(chord_event(&c, BTN_SELECT, 0) == CHORD_TAP);
+        assert(chord_event(&c, BTN_SOUTH,  1) == CHORD_PASS);      /* чужая кнопка */
+        Chord s; memset(&s, 0, sizeof s); s.a = BTN_MODE; s.b = -1;
+        assert(chord_event(&s, BTN_MODE, 1) == CHORD_FIRE);
+        assert(chord_event(&s, BTN_MODE, 1) == CHORD_SWALLOW);
+        assert(chord_event(&s, BTN_MODE, 0) == CHORD_SWALLOW);
+        assert(chord_event(&s, BTN_MODE, 1) == CHORD_FIRE);
+    }
+
     puts("all core tests passed");
     return 0;
 }

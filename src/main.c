@@ -231,8 +231,7 @@ typedef struct {
     int invoke;
     int user_shown;
     int user_hidden;
-    int show_a, show_b;
-    int chord_a, chord_b, chord_fired;
+    Chord chord;
     int ino_input, wd_input;
     int ino_cfg, wd_cfg, wd_radialkb;
     int cfg_dirty;
@@ -586,7 +585,7 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
 
     if (ini_get(path, "general", "show", v, sizeof v) ||
         ini_get(path, "general", "toggle", v, sizeof v)) {
-        if (!parse_combo(v, &a->show_a, &a->show_b)) {
+        if (!parse_combo(v, &a->chord.a, &a->chord.b)) {
             a->cfg_has_error = 1;
             snprintf(a->cfg_err_msg, sizeof a->cfg_err_msg, "Invalid show combo: '%s'", v);
         }
@@ -1249,7 +1248,7 @@ static void pads_resync(App *a)
         pad_close(&a->pads[i]);
         kb_reset_input(&a->kb);
         reset_ime_state(a);
-        a->chord_a = a->chord_b = a->chord_fired = 0;
+        chord_reset(&a->chord);
         a->pads[i] = a->pads[a->npads - 1];
         live[i] = live[a->npads - 1];
         a->npads--;
@@ -1536,26 +1535,6 @@ static void setup_cfg_watches(App *a)
     }
 }
 
-static int check_show_combo(App *a, int code, int down)
-{
-    if (a->show_b < 0) {
-        if (code == a->show_a) {
-            if (down && !a->chord_fired) { a->chord_fired = 1; show_panel(a); }
-            else if (!down) a->chord_fired = 0;
-            return 1;
-        }
-        return 0;
-    }
-    if (code == a->show_a) a->chord_a = down;
-    if (code == a->show_b) a->chord_b = down;
-    if (a->chord_a && a->chord_b) {
-        if (!a->chord_fired) { a->chord_fired = 1; show_panel(a); }
-        return 1;
-    }
-    if (!a->chord_a && !a->chord_b) a->chord_fired = 0;
-    return 0;
-}
-
 /* ======================= main ======================= */
 int main(int argc, char **argv)
 {
@@ -1565,7 +1544,7 @@ int main(int argc, char **argv)
     A.scale = 1; A.grab_pref = 1; A.running = 1;
     A.ino_input = A.wd_input = A.ino_cfg = A.wd_cfg = A.wd_radialkb = -1;
     A.cfg_dirty = 0; A.cfg_reload_at = 0;
-    A.show_a = BTN_SELECT; A.show_b = BTN_START;
+    A.chord.a = BTN_SELECT; A.chord.b = BTN_START;
     A.invoke = INVOKE_SMART;
 
     const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
@@ -1724,11 +1703,15 @@ int main(int argc, char **argv)
                     for (size_t e = 0; e < (size_t)n / sizeof ev[0]; e++) {
                         if (ev[e].type != EV_KEY && ev[e].type != EV_ABS) continue;
                         if (ev[e].type == EV_KEY) {
-                            int down = ev[e].value == 1;
-                            if (ev[e].value != 2 && check_show_combo(&A, ev[e].code, down))
-                                continue;
-                            if (input_armed_strict(A.visible, A.mapped, A.ctx != NULL))
-                                kb_key(&A.kb, ev[e].code, ev[e].value);
+                            int armed = input_armed_strict(A.visible, A.mapped, A.ctx != NULL);
+                            int cr = chord_event(&A.chord, ev[e].code, ev[e].value);
+                            if (cr == CHORD_FIRE) show_panel(&A);
+                            if (cr == CHORD_TAP && armed) {   /* одиночный тап кнопки аккорда */
+                                kb_key(&A.kb, ev[e].code, 1);
+                                kb_key(&A.kb, ev[e].code, 0);
+                            }
+                            if (cr != CHORD_PASS) continue;
+                            if (armed) kb_key(&A.kb, ev[e].code, ev[e].value);
                         } else if (input_armed_strict(A.visible, A.mapped, A.ctx != NULL)) {
                             kb_abs(&A.kb, p, ev[e].code, ev[e].value);
                         }

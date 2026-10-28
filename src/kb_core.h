@@ -318,6 +318,50 @@ static inline int input_armed_strict(int panel_shown, int mapped, int im_active)
     return panel_shown && mapped && im_active;
 }
 
+/* Аккорд вызова клавиатуры (например Select+Start).
+   Кнопки аккорда не действуют на нажатие: если за время удержания партнёр так и
+   не был нажат, при отпускании кнопка считается обычным тапом (CHORD_TAP).
+   Это убирает конфликт, когда кнопка аккорда одновременно назначена на hide/enter. */
+typedef struct {
+    int a, b;            /* коды кнопок; b < 0 — одиночная кнопка */
+    int held_a, held_b;
+    int fired;           /* аккорд уже сработал в текущем удержании */
+    int pending;         /* бит 1/2: кнопка нажата и пока может оказаться тапом */
+} Chord;
+
+enum { CHORD_PASS = 0, CHORD_SWALLOW, CHORD_FIRE, CHORD_TAP };
+
+static inline void chord_reset(Chord *c) { c->held_a = c->held_b = c->fired = c->pending = 0; }
+
+static int chord_event(Chord *c, int code, int value)
+{
+    int is_a = (code == c->a), is_b = (c->b >= 0 && code == c->b);
+    if (!is_a && !is_b) return CHORD_PASS;
+    if (c->b < 0) {                       /* одиночная кнопка: срабатывает на нажатие */
+        if (value == 1 && !c->fired) { c->fired = 1; return CHORD_FIRE; }
+        if (value == 0) c->fired = 0;
+        return CHORD_SWALLOW;
+    }
+    int bit = is_a ? 1 : 2;
+    if (value == 1) {
+        if (is_a) c->held_a = 1; else c->held_b = 1;
+        c->pending |= bit;
+        if (c->held_a && c->held_b) {
+            c->pending = 0;               /* это аккорд, а не тап */
+            if (!c->fired) { c->fired = 1; return CHORD_FIRE; }
+        }
+        return CHORD_SWALLOW;
+    }
+    if (value == 0) {
+        int tap = c->pending & bit;
+        if (is_a) c->held_a = 0; else c->held_b = 0;
+        c->pending &= ~bit;
+        if (!c->held_a && !c->held_b) c->fired = 0;
+        return tap ? CHORD_TAP : CHORD_SWALLOW;
+    }
+    return CHORD_SWALLOW;                 /* автоповтор (value == 2) */
+}
+
 static inline int tbit(const unsigned long *a, int b)
 {
     return (a[b / (8 * sizeof(long))] >> (b % (8 * sizeof(long)))) & 1;
