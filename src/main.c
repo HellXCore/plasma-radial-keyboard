@@ -349,21 +349,67 @@ static int parse_rgb(const char *s, double *o)
     return 1;
 }
 
+/* Кеш файлов конфигурации: за один проход перезагрузки каждый файл читается
+   с диска один раз, а не по fopen()+разбору на каждый ключ (их ~30). Сбрасывается
+   в начале каждой перезагрузки (plasma_mode_load). */
+#define INI_CACHE_N 4
+static struct { char path[PATH_MAX + 64]; char *data; int valid; } ini_cache[INI_CACHE_N];
+
+static void ini_cache_flush(void)
+{
+    for (int i = 0; i < INI_CACHE_N; i++) {
+        free(ini_cache[i].data);
+        ini_cache[i].data = NULL;
+        ini_cache[i].valid = 0;
+    }
+}
+
+/* Возвращает содержимое файла или NULL (отсутствие файла тоже кешируется) */
+static const char *ini_cache_load(const char *path)
+{
+    int slot = -1;
+    for (int i = 0; i < INI_CACHE_N; i++) {
+        if (ini_cache[i].valid && !strcmp(ini_cache[i].path, path)) return ini_cache[i].data;
+        if (!ini_cache[i].valid && slot < 0) slot = i;
+    }
+    if (slot < 0) { ini_cache_flush(); slot = 0; }
+
+    char *buf = NULL;
+    FILE *f = fopen(path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+        if (sz >= 0 && sz < (1 << 20) && (buf = malloc((size_t)sz + 1))) {
+            size_t r = fread(buf, 1, (size_t)sz, f);
+            buf[r] = 0;
+        }
+        fclose(f);
+    }
+    snprintf(ini_cache[slot].path, sizeof ini_cache[slot].path, "%s", path);
+    ini_cache[slot].data = buf;
+    ini_cache[slot].valid = 1;
+    return buf;
+}
+
 static int ini_get(const char *path, const char *group, const char *key, char *out, size_t n)
 {
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;
+    const char *p = ini_cache_load(path);
+    if (!p) return 0;
     char line[1024], cur[128] = "";
-    int found = 0;
-    while (fgets(line, sizeof line, f)) {
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len >= sizeof line) len = sizeof line - 1;
+        memcpy(line, p, len); line[len] = 0;
+        p = e ? e + 1 : p + strlen(p);
+
         strip_comment(line);
         char *s = trim_whitespace(line);
         if (!*s) continue;
         if (*s == '[') {
-            char *e = strchr(s, ']');
+            char *end = strchr(s, ']');
             cur[0] = 0;
-            if (e) {
-                size_t L = (size_t)(e - s - 1); if (L > sizeof cur - 1) L = sizeof cur - 1;
+            if (end) {
+                size_t L = (size_t)(end - s - 1); if (L > sizeof cur - 1) L = sizeof cur - 1;
                 memcpy(cur, s + 1, L); cur[L] = 0;
                 trim_whitespace(cur);
             }
@@ -377,12 +423,10 @@ static int ini_get(const char *path, const char *group, const char *key, char *o
         char *val = trim_whitespace(eq + 1);
         if (!strcasecmp(k, key)) {
             snprintf(out, n, "%s", val);
-            found = 1;
-            break;
+            return 1;
         }
     }
-    fclose(f);
-    return found;
+    return 0;
 }
 
 static void theme_defaults_breeze_dark(Theme *t)
@@ -490,6 +534,7 @@ static int plasma_vk_mode_from_file(const char *path)
 
 static void plasma_mode_load(App *a)
 {
+    ini_cache_flush();   /* начало прохода: файлы (kwinrc, kdeglobals, config.ini) читаем заново */
     a->plasma_mode = plasma_vk_mode_from_file(a->kwinrc);
 }
 
