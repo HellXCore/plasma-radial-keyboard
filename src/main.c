@@ -304,16 +304,13 @@ static char *trim_whitespace(char *str)
     return str;
 }
 
+/* Комментарий — только строка, начинающаяся с '#' или ';'. Нельзя резать по '#'
+   внутри строки: иначе `accent_color = #3daee9` превращается в пустое значение. */
 static void strip_comment(char *s)
 {
-    int in_quote = 0;
-    for (char *p = s; *p; p++) {
-        if (*p == '"') in_quote = !in_quote;
-        else if (!in_quote && (*p == '#' || *p == ';')) {
-            *p = '\0';
-            break;
-        }
-    }
+    char *p = s;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '#' || *p == ';') *p = '\0';
 }
 
 static int parse_rgb(const char *s, double *o)
