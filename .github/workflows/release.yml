@@ -50,28 +50,37 @@ jobs:
 
     container:
       image: ${{ matrix.image }}
+    
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Важно для корректной работы с историей тегов
 
-      # Новый шаг: Вытаскиваем версию из тега или ставим заглушку/хэш коммита
+      # New step: Extract the version from the tag, or provide a placeholder/commit hash.
       - name: Determine Package Version
         id: get_version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            # Извлекаем "1.0.0" из "refs/tags/v1.0.0"
-            VERSION=$(echo "${{ github.ref }}" | sed -e 's|refs/tags/v||')
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # "refs/tags/v0.5.0-alpha" -> "0.5.0-alpha"
+            VERSION="${GITHUB_REF#refs/tags/v}"
             RELEASE="1"
           else
-            # Если это обычный пуш или PR без тега, используем заглушку с хэшем
             VERSION="0.0.0"
-            RELEASE="git.$(git rev-parse --short HEAD)"
+            RELEASE="git.${GITHUB_SHA::7}"
           fi
-          echo "PKG_VERSION=$VERSION" >> $GITHUB_ENV
-          echo "PKG_RELEASE=$RELEASE" >> $GITHUB_ENV
+
+          # Hyphens are prohibited in pkgver (Arch) and in RPM versions
+          if [ "${{ matrix.pkg-type }}" = "pacman" ]; then
+            VERSION="${VERSION//-/_}"      # 0.5.0_alpha
+          else
+            VERSION="${VERSION//-/\~}"     # 0.5.0~alpha
+          fi
+
+          echo "PKG_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "PKG_RELEASE=$RELEASE" >> "$GITHUB_ENV"
 
       - name: Install dependencies and FPM
         run: ${{ matrix.setup-cmd }}
