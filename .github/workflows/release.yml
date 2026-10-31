@@ -43,9 +43,8 @@ jobs:
             setup-cmd: |
               pacman -Syu --noconfirm
               pacman -S --noconfirm \
-                ruby gcc make pkgconf git binutils \
+                gcc make pkgconf git binutils sudo \
                 wayland wayland-protocols cairo pango
-              gem install --no-document fpm
               useradd -m builder
               echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
               chown -R builder:builder .
@@ -82,20 +81,24 @@ jobs:
         run: |
           mkdir -p ../packages_out
 
-          # Если это Arch Linux, запускаем весь процесс от имени пользователя `builder`
+          # Если это Arch Linux, собираем через родной makepkg
           if [ "${{ matrix.pkg-type }}" = "pacman" ]; then
-            chown -R builder:builder ../packages_out
-            sudo -E -u builder bash -c '
-              export PATH=$PATH:$(ruby -e "print Gem.user_dir")/bin:/usr/local/bin
-              PKG_NAME="plasma-radial-keyboard"
-              make
-              mkdir -p dist
-              make install DESTDIR=$(pwd)/dist PREFIX=/usr
-              fpm -s dir -t pacman -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
-                  -d "wayland" -d "cairo" -d "pango" -p ../packages_out/ -C dist .
-            '
+            # Подменяем версию и релиз в файле PKGBUILD на актуальные из CI
+            sed -i "s/^pkgver=.*/pkgver=${PKG_VERSION}/" PKGBUILD
+            sed -i "s/^pkgrel=.*/pkgrel=${PKG_RELEASE}/" PKGBUILD
+            
+            # Архивируем исходники БЕЗОПАСНО: создаем архив уровнем выше, чтобы tar не читал сам себя
+            tar -czf "../plasma-radial-keyboard-${PKG_VERSION}.tar.gz" --exclude=".git" .
+            mv "../plasma-radial-keyboard-${PKG_VERSION}.tar.gz" .
+            
+            # Разрешаем пользователю builder читать эту директорию
+            chown -R builder:builder .
+
+            # Запускаем сборку через makepkg от пользователя builder
+            # -s автоматически ставит зависимости (если бы они были нужны), -f принудительно перезаписывает
+            sudo -E -u builder makepkg -sf --noconfirm
           else
-            # Стандартная логика для Ubuntu и Fedora (под root)
+            # Стандартная логика для Ubuntu и Fedora (под root через FPM)
             export PATH=$PATH:$(ruby -e 'print Gem.user_dir')/bin:/usr/local/bin
             PKG_NAME="plasma-radial-keyboard"
             make
@@ -109,9 +112,9 @@ jobs:
               fpm -s dir -t rpm -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
                   -d "wayland" -d "cairo" -d "pango" -p ../packages_out/ -C dist .
             fi
+            
+            mv ../packages_out/* .
           fi
-
-          mv ../packages_out/* .
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
