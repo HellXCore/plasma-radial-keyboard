@@ -109,7 +109,7 @@ jobs:
             sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
             sed -i "s|^source=.*|source=(\"\${pkgname}-\${pkgver}.tar.gz\")|" PKGBUILD
             grep -q '^options=' PKGBUILD || sed -i "/^pkgdesc=/a options=('!debug')" PKGBUILD
-            
+
             chown -R builder:builder "$BUILD_DIR"
             sudo -u builder makepkg -sf --noconfirm
 
@@ -141,3 +141,25 @@ jobs:
             *.deb
             *.rpm
             *.pkg.tar.zst
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
