@@ -1,201 +1,199 @@
-# plasma-radial-keyboard
+#  Plasma Radial Keyboard (RadialKB)
 
-Dual-stick radial on-screen keyboard for gamepads, implemented as a native
-**Wayland input method** for KWin (Plasma 6, Wayland). KWin launches it as the
-Virtual Keyboard.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Platform: Wayland](https://img.shields.io/badge/Platform-Wayland%20%2F%20KDE%20Plasma-orange.svg)]()
+[![Language: C](https://img.shields.io/badge/Language-C99-brightgreen.svg)]()
 
-> Status: Pre-Alpha. Core stick/key/chord logic is unit-tested (`make test`);
-> the Wayland/Cairo front end (`src/main.c`) is not covered by tests.
+**RadialKB** is a lightweight, dual-stick radial on-screen keyboard designed for gamepads on **KDE Plasma (Wayland)**.
 
-## Build (CachyOS / Arch)
+Inspired by the Daisywheel input system (popularized by Steam Controller and handheld gaming interfaces), it enables high-speed, intuitive text input using only two analog sticks and a controller's buttons—without needing touchscreens or mouse emulation.
 
-    sudo pacman -S --needed base-devel wayland cairo pango
-    make && make test
-    sudo make install            # -> /usr/bin + /usr/share/applications/radialkb.desktop
+Written in pure C using native Wayland protocols, Cairo, and Pango. It has zero heavy toolkit dependencies (no Qt or GTK runtime overhead) while integrating with KDE Breeze themes and blur effects.
 
-`make install` does not install a configuration file. Without
-`~/.config/radialkb/config.ini` the built-in defaults are used (see
-[Configuration](#configuration)); copy the sample `config.ini` from the
-repository there to customise.
+---
 
-## Enable in Plasma
+## Features
 
-1. System Settings → Keyboard → Virtual Keyboard → choose
-   "Radial Gamepad Keyboard".  (Or: `kwriteconfig6 --file kwinrc --group Wayland
-   --key InputMethod /usr/share/applications/radialkb.desktop`, then re-login.)
-2. Plasma Bigscreen: the same key in `~/.config/plasma-bigscreen/kwinrc` under `[Wayland]`.
+- **Dual-Stick Input:**
+  - **Left Stick:** Selects a character group (8 radial sectors).
+  - **Right Stick:** Flick in one of 8 directions to choose and commit a character.
+- **KDE Plasma Integration:**
+  - Implements `zwp_input_method_v1` and `zwp_input_panel_v1`.
+  - Integrates into KDE Plasma as a registered virtual keyboard.
+- **Breeze Theme Integration:**
+  - Dynamically detects KDE color schemes (`kdeglobals`), light/dark modes, and user accent colors.
+  - Supports background acrylic blur through `ext-background-effect-v1` and `org_kde_kwin_blur`.
+- **Exclusive Gamepad Grab (`evdev`):**
+  - Uses `EVIOCGRAB` when active so inputs do not leak into background windows or games.
+  - Fails gracefully if another application (like Steam) currently holds an exclusive grab.
+- **Hot-Plug & Hot-Reload:**
+  - Gamepad connect/disconnect handling via inotify on `/dev/input`.
+  - Live reload of configuration and layout files without restarting the daemon.
+- **Multi-Layout Support:**
+  - Ships with English and Russian layouts.
+  - Custom layouts can be defined with a simple text-based format.
+- **Minimal Footprint:**
+  - Pure C codebase, low memory and CPU footprint, sub-frame input response.
 
-The panel needs a text field that has input-method focus **and** a connected
-DualShock/DualSense/Xbox-compatible pad. Without a supported pad it never appears;
-unplugging the last pad hides it and releases the grab.
+---
 
-## Invoke modes
+## Default Controls
 
-Set with `invoke` in `config.ini`, a command-line flag, or an environment variable
-(the latter two win over the config file, also after a config hot-reload).
+| Action | Xbox Controller | PlayStation Controller |
+| :--- | :--- | :--- |
+| **Select Group** | Left Stick | Left Stick |
+| **Type Character** | Right Stick (Flick) | Right Stick (Flick) |
+| **Backspace** | `B` or `LB` | `Circle` or `L1` |
+| **Space** | `X`, `Y` or `RB` | `Square`, `Triangle` or `R1` |
+| **Enter** | `A` or `Start` / `RT` | `Cross` or `Options` / `R2` |
+| **Shift** | `LT` (Hold) | `L2` (Hold) |
+| **Symbols Layer** | `L3` (Stick Click) | `L3` (Stick Click) |
+| **Switch Layout** | `R3` (Stick Click) | `R3` (Stick Click) |
+| **Hide Keyboard** | `Select` / `Back` | `Share` |
+| **Show / Toggle Chord** | `Select` + `Start` | `Share` + `Options` |
+| **Navigation** | D-Pad | D-Pad |
 
-| Mode | Flag | Behaviour |
-|---|---|---|
-| **smart** (default) | `--smart` | Opens automatically when a text field is focused and a pad is connected, regardless of Plasma's setting. If you hide it with the **hide** button it stays hidden until the focus moves to another field or you press the **show** chord. |
-| **manual** | `--manual`, `RADIALKB_MANUAL=1` | Never auto-shows; only the **show** chord opens it (text field + pad still required). |
-| **auto** | `--auto` | Follows Plasma's `kwinrc` `[Wayland]` `VirtualKeyboardMode` (below). |
+---
 
-In **auto** mode:
+## Requirements
 
-| Plasma "Show Virtual Keyboard" | `VirtualKeyboardMode` | What this keyboard does |
-|---|---|---|
-| Never | `0` | No auto-show; the show chord can open it. |
-| With Touch and Tablet | `1` | No auto-show; the show chord can open it. |
-| With Touch, Tablet, and Mouse | `2` | Auto-show on a focused text field (pad still required). |
+### Build Dependencies
 
-Legacy `VirtualKeyboardEnabled=false` is treated as Never; if neither key is
-present the mode defaults to `1`. `smart` and `manual` ignore this setting.
+- C compiler (`gcc` or `clang`)
+- `make`
+- `pkg-config`
+- `wayland-client` and `wayland-scanner`
+- `cairo`
+- `pango` / `pangocairo`
 
-## Show / hide
+#### Debian / Ubuntu / KDE Neon:
+```bash
+sudo apt install build-essential pkg-config libwayland-dev wayland-protocols libcairo2-dev libpango1.0-dev
+```
 
-* **Show chord** (`show`, default `select+start`): opens the panel while a text
-  field is focused and a pad is connected. Accepts one button (`guide`) or two
-  joined with `+` (`lb+rb`, `l3+r3`). The order in which the two buttons are
-  pressed does not matter.
-* **Chord buttons act on release.** A chord button pressed on its own is
-  delivered as an ordinary tap when released, so with the defaults a lone
-  **Select** still hides the panel and a lone **Start** still types Enter, while
-  Select+Start only opens it.
-* **Hide** (`hide`, default `select`): hides the panel until the next focus
-  change or the show chord. The panel also hides when the text field loses
-  focus, Plasma/the mode says so, or the last pad is unplugged.
+#### Arch Linux / Manjaro:
+```bash
+sudo pacman -S base-devel wayland wayland-protocols cairo pango
+```
 
-## Input grab (games)
+#### Fedora:
+```bash
+sudo pacman -S base-devel wayland wayland-protocols cairo pango
+```
 
-While the panel is visible (and has presented its first frame), pads are grabbed
-with `EVIOCGRAB` so sticks/buttons do not leak into the game. Hiding **always**
-ungrabs; FDs stay open so hotplug and the show chord keep working.
+### Runtime Permissions:
+```bash
+sudo usermod -a -G input $USER
+```
+(Log out and log back in for changes to apply).
 
-If another client already holds the device (for example Steam Input, error
-`EBUSY`), the grab is skipped, one warning is logged and input is shared; the
-grab is retried the next time the panel is shown.
+## Building and Installation:
 
-`--no-grab` / `RADIALKB_NO_GRAB=1` never grabs.
+1. Clone the repository:
+```bash
+git clone https://github.com/your-username/plasma-radial-keyboard.git
+cd plasma-radial-keyboard
+```
+2. Compile and tests:
+```bash
+make && make test
+```
+3. Compile and tests:
+```bash
+sudo make install
+```
 
-## Controls
+## Setup in KDE Plasma:
 
-Defaults; everything except the sticks, RT and the D-pad can be remapped in
-`[controls]`.
+1. Open System Settings.
+2. Go to Input & Output → Keyboard → Virtual Keyboard.
+3. Choose Radial Gamepad Keyboard.
+4. Configure activation behavior:
+* Use "With Touch, Tablet, and Mouse" for automatic activation, or press the Select + Start chord on your gamepad whenever a text input field is focused.
 
-| Input | Action |
-|---|---|
-| Left stick | pick one of 8 groups (stays selected when released) |
-| Right stick | flick in one of 8 directions, **return to centre to type** |
-| LT (hold) | Shift |
-| B / LB | Backspace (hold = repeat) |
-| X / Y / RB | Space (hold = repeat) |
-| A / Start | Enter |
-| RT | Enter (fixed) |
-| D-pad | Arrow keys (hold = repeat, fixed) |
-| L3 | symbols/digits layer (toggle) |
-| R3 | next language |
-| Select | hide panel (see above) |
-| Select+Start | show panel (customizable) |
+## Configuration:
 
-If two buttons are bound to the same action, auto-repeat continues as long as
-either one is held. The hint pills at the bottom of the panel always show the
-**first** button bound to each action, so they follow your remapping.
+Settings are stored in:
+* Main config: ~/.config/radialkb/config.ini
+* Custom layouts: ~/.config/radialkb/layouts.conf
 
-A small red dot in the top-right corner of the panel means `config.ini` has an
-error; the details are printed to stderr (`journalctl --user -f | grep radialkb`)
-and the affected value falls back to its default.
+#### Example custom configuration *config.ini*:
+```ini
+[general]
+# Options:
+# - smart:  opens automatically on focus if a gamepad is connected
+# - manual: opens only via shortcut / chord
+# - auto:   follows KWin's VirtualKeyboardMode setting
+invoke = smart
 
-## Configuration
+# Toggle combo (single button or combination)
+show = select+start
 
-File: `$XDG_CONFIG_HOME/radialkb/config.ini` (default `~/.config/radialkb/config.ini`).
-It is hot-reloaded when it changes, as are `kwinrc`, `kdeglobals` and the active
-layout file; other files in `~/.config` are ignored. Only whole-line comments
-(`#` or `;` at the start of a line) are supported, so values such as
-`#3daee9` are safe.
+# Layout file name (inside ~/.config/radialkb/) or absolute path
+layout = layouts.conf
 
-Without the file everything below uses the defaults shown.
+[controls]
+backspace = b, lb
+space = x, y, rb
+enter = a, start
+shift = lt
+symbols = l3
+layout_switch = r3
+hide = select
 
-    [general]
-    invoke = smart            # smart | manual | auto
-    show = select+start       # alias: toggle; one button or "a+b"
-    layout = layouts.conf     # optional; relative to ~/.config/radialkb/ or absolute
+[ui]
+scale = 1.0
+font_scale = 1.0
+font_family = Noto Sans
+# Custom dimensions (0 = auto-calculated based on scale)
+# width = 1100
+# height = 500
 
-    [controls]                # comma-separated lists, up to 6 buttons per action
-    backspace = b, lb
-    space = x, y, rb
-    enter = a, start
-    shift = lt
-    symbols = l3
-    layout_switch = r3
-    hide = select
+[theme]
+# solid, translucent, or acrylic
+background_style = acrylic
+background_opacity = 0.85
+corner_radius = 18.0
+# accent_color = #3daee9 # or "auto" to pull from KDE
+```
 
-    [ui]
-    scale = 1.0               # 0.5 .. 3.0, scales the whole panel
-    font_scale = 1.0          # 0.5 .. 3.0
-    font_family = Noto Sans
-    width = 0                 # 600 .. 3840 px; omit/0 = 1100 * scale
-    height = 0                # 300 .. 2160 px; omit/0 = 500 * scale
+#### Example custom layouts *layouts.conf*:
+```ini
+[en]
+lower: a b c d | e f g h | i j k l | m n o p | q r s t | u v w x | y z @ # | . , ? ! ' - : ;
+sym: 1 2 3 4 | 5 6 7 8 | 9 0 - + | ( ) [ ] { } < > | @ # $ % ^ & * ~ | = / \ <bar> <us> ` " ' | . , ? ! : ; … € | € £ ¥ § © ° • №
+```
+Special escape tokens:
+* ```<bar>```: pipe character (|)
+* ```<us>```: underscore (_)
+* ```_```: empty slot
 
-    [theme]
-    background_style = acrylic   # acrylic | solid | translucent
-    background_opacity = 0.85    # 0.1 .. 1.0 (ignored for solid)
-    corner_radius = 18           # 0 .. 48
-    accent_color = auto          # auto, or #rrggbb / #rrggbbaa / r,g,b
+## Command-Line Arguments:
 
-Button names: `a b x y`, `lb rb` (`l1 r1`), `lt rt` (`l2 r2`), `l3 r3`
-(`thumbl thumbr`), `select` (`share back`), `start` (`options menu`),
-`guide` (`mode ps`), plus the PlayStation/compass aliases `cross circle square
-triangle south east west north`. Unknown names are reported as a config error.
+Usage: plasma-radial-keyboard [OPTIONS]
+```txt
+Options:
+  --no-grab            Do not grab input devices exclusively with EVIOCGRAB
+  --smart              Force smart invoke mode
+  --manual             Force manual invocation only (via chord)
+  --auto               Follow KWin virtual keyboard settings
+  --layout FILE        Use specified layout file instead of default
+```
 
-`acrylic` uses the compositor's background blur (`ext_background_effect_v1` or
-`org_kde_kwin_blur`) when available; otherwise it is just translucent.
+## License:
+```txt
+Copyright (C) 2026 [HellXCore](https://github.com/HellXCore)
 
-Command line: `--no-grab`, `--manual | --smart | --auto`, `--layout FILE`.
-Environment: `RADIALKB_NO_GRAB=1`, `RADIALKB_MANUAL=1`.
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-## Theme
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-Colours follow the Plasma colour scheme in `~/.config/kdeglobals`
-(`Colors:Window`, `Colors:Button`, `Colors:Selection`, `General` `AccentColor`),
-including light/dark switches. `accent_color` in `config.ini` overrides the
-system accent. Without a readable `kdeglobals` a built-in Breeze Dark palette is used.
-
-## Layouts
-
-Built in: `en`, `ru`. Override with `~/.config/radialkb/layouts.conf`
-(or `layout =` in `config.ini`, or `--layout FILE`); up to 8 languages:
-
-    [en]
-    lower: a b c d | e f g h | ...      # 8 groups separated by |
-    upper: A B C D | ...                # optional: generated from lower when omitted
-    sym:   1 2 3 4 | 5 6 7 8 | ...      # optional: copied from the first layout
-    [de]
-    lower: ...
-
-Tokens within a group: first 4 → N,E,S,W; next 4 → NE,SE,SW,NW.
-`_` = empty slot, `<bar>` = `|`, `<us>` = `_`. A token is at most 15 bytes.
-The symbols layer takes priority over Shift.
-
-## If it does not show up
-
-* Compare `/usr/share/applications/radialkb.desktop` with
-  `/usr/share/applications/org.kde.plasma.keyboard.desktop`:
-  the `X-KDE-Wayland-*` keys must match what your KWin expects.
-* Run `journalctl --user -f | grep -i radialkb` while focusing a text field.
-* "no DualShock/Xbox-compatible pad": need read access to `/dev/input/event*`
-  (logind/uaccess, or the `input` group). Hotplug is watched via inotify.
-* Mode `manual`, or `auto` with Plasma set to anything but "With Touch, Tablet,
-  and Mouse", will not auto-show: press the show chord (default Select+Start)
-  while the text field is focused.
-* "grabbed by another client": Steam Input or an emulator owns the pad; the
-  keyboard still works but game input is not blocked while it is visible.
-* The protocol XML in `protocol/` is a restatement of input-method-unstable-v1;
-  if KWin disagrees, swap in KWin's own copy.
-
-## Development
-
-    make test        # unit tests for layouts, sticks, binds, chord, visibility logic
-
-The Wayland-independent logic lives in `src/kb_core.h` and is the part covered by
-`tests/test_core.c`; rendering, protocol handling and config loading are in
-`src/main.c`.
+You should have received a copy of the [GNU General Public License
+along with this program](LICENSE).  If not, see <https://www.gnu.org/licenses/>.
+```
