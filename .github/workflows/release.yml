@@ -3,6 +3,7 @@ name: build-packages
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*.*.*" ] # Триггер на теги версий (например, v1.0.0)
   pull_request:
     branches: [ "main" ]
 
@@ -55,43 +56,62 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Важно для корректной работы с историей тегов
+
+      # Новый шаг: Вытаскиваем версию из тега или ставим заглушку/хэш коммита
+      - name: Determine Package Version
+        id: get_version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # Извлекаем "1.0.0" из "refs/tags/v1.0.0"
+            VERSION=$(echo "${{ github.ref }}" | sed -e 's|refs/tags/v||')
+            RELEASE="1"
+          else
+            # Если это обычный пуш или PR без тега, используем заглушку с хэшем
+            VERSION="0.0.0"
+            RELEASE="git.$(git rev-parse --short HEAD)"
+          fi
+          echo "PKG_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "PKG_RELEASE=$RELEASE" >> $GITHUB_ENV
 
       - name: Install dependencies and FPM
         run: ${{ matrix.setup-cmd }}
 
       - name: Compile and Build Package
         run: |
-          # If this is Arch Linux, run the entire build process as the user `builder`
+          mkdir -p ../packages_out
+
+          # Если это Arch Linux, запускаем весь процесс от имени пользователя `builder`
           if [ "${{ matrix.pkg-type }}" = "pacman" ]; then
-            sudo -u builder bash -c '
+            chown -R builder:builder ../packages_out
+            sudo -E -u builder bash -c '
               export PATH=$PATH:$(ruby -e "print Gem.user_dir")/bin:/usr/local/bin
               PKG_NAME="plasma-radial-keyboard"
-              PKG_VERSION="1.0.0"
-              PKG_RELEASE="1"
               make
               mkdir -p dist
               make install DESTDIR=$(pwd)/dist PREFIX=/usr
               fpm -s dir -t pacman -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
-                  -d "wayland" -d "cairo" -d "pango" -C dist .
+                  -d "wayland" -d "cairo" -d "pango" -p ../packages_out/ -C dist .
             '
           else
-            # Standard logic for Ubuntu and Fedora (as root)
+            # Стандартная логика для Ubuntu и Fedora (под root)
             export PATH=$PATH:$(ruby -e 'print Gem.user_dir')/bin:/usr/local/bin
             PKG_NAME="plasma-radial-keyboard"
-            PKG_VERSION="1.0.0"
-            PKG_RELEASE="1"
             make
             mkdir -p dist
             make install DESTDIR=$(pwd)/dist PREFIX=/usr
             
             if [ "${{ matrix.pkg-type }}" = "deb" ]; then
               fpm -s dir -t deb -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
-                  -d "libwayland-client0" -d "libcairo2" -d "libpangocairo-1.0-0" -C dist .
+                  -d "libwayland-client0" -d "libcairo2" -d "libpangocairo-1.0-0" -p ../packages_out/ -C dist .
             elif [ "${{ matrix.pkg-type }}" = "rpm" ]; then
               fpm -s dir -t rpm -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
-                  -d "wayland" -d "cairo" -d "pango" -C dist .
+                  -d "wayland" -d "cairo" -d "pango" -p ../packages_out/ -C dist .
             fi
           fi
+
+          mv ../packages_out/* .
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
