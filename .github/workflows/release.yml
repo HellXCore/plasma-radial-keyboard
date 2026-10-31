@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         include:
-          # Контейнер для Ubuntu/Debian
+          # Container for Ubuntu/Debian
           - os-name: debian-ubuntu
             image: ubuntu:24.04
             pkg-type: deb
@@ -22,7 +22,7 @@ jobs:
                 libwayland-dev wayland-protocols libcairo2-dev libpango1.0-dev
               gem install --no-document fpm
 
-          # Контейнер для Fedora
+          # Container for Fedora
           - os-name: fedora
             image: fedora:40
             pkg-type: rpm
@@ -32,7 +32,7 @@ jobs:
                 wayland-devel wayland-protocols-devel cairo-devel pango-devel
               gem install --no-document fpm
 
-          # Контейнер для Arch Linux
+          # Container for Arch Linux
           - os-name: archlinux
             image: archlinux:latest
             pkg-type: pacman
@@ -42,6 +42,9 @@ jobs:
                 ruby gcc make pkgconf git binutils \
                 wayland wayland-protocols cairo pango
               gem install --no-document fpm
+              useradd -m builder
+              echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+              chown -R builder:builder .
 
     container:
       image: ${{ matrix.image }}
@@ -55,32 +58,36 @@ jobs:
 
       - name: Compile and Build Package
         run: |
-          # В некоторых контейнерах ruby ставит fpm в домашнюю директорию или в /usr/local/bin
-          export PATH=$PATH:$(ruby -e 'print Gem.user_dir')/bin:/usr/local/bin
-          
-          PKG_NAME="plasma-radial-keyboard"
-          PKG_VERSION="1.0.0"
-          PKG_RELEASE="1"
-          
-          # Компиляция
-          make
-          
-          # Подготовка директории установки
-          mkdir -p dist
-          make install DESTDIR=$(pwd)/dist PREFIX=/usr
-          
-          # Сборка конкретного типа пакета
-          if [ "${{ matrix.pkg-type }}" = "deb" ]; then
-            fpm -s dir -t deb -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
-                -d "libwayland-client0" -d "libcairo2" -d "libpangocairo-1.0-0" -C dist .
-          
-          elif [ "${{ matrix.pkg-type }}" = "rpm" ]; then
-            fpm -s dir -t rpm -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
-                -d "wayland" -d "cairo" -d "pango" -C dist .
-          
-          elif [ "${{ matrix.pkg-type }}" = "pacman" ]; then
-            fpm -s dir -t pacman -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
-                -d "wayland" -d "cairo" -d "pango" -C dist .
+          # If this is Arch Linux, run the entire build process as the user `builder`
+          if [ "${{ matrix.pkg-type }}" = "pacman" ]; then
+            sudo -u builder bash -c '
+              export PATH=$PATH:$(ruby -e "print Gem.user_dir")/bin:/usr/local/bin
+              PKG_NAME="plasma-radial-keyboard"
+              PKG_VERSION="1.0.0"
+              PKG_RELEASE="1"
+              make
+              mkdir -p dist
+              make install DESTDIR=$(pwd)/dist PREFIX=/usr
+              fpm -s dir -t pacman -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
+                  -d "wayland" -d "cairo" -d "pango" -C dist .
+            '
+          else
+            # Standard logic for Ubuntu and Fedora (as root)
+            export PATH=$PATH:$(ruby -e 'print Gem.user_dir')/bin:/usr/local/bin
+            PKG_NAME="plasma-radial-keyboard"
+            PKG_VERSION="1.0.0"
+            PKG_RELEASE="1"
+            make
+            mkdir -p dist
+            make install DESTDIR=$(pwd)/dist PREFIX=/usr
+            
+            if [ "${{ matrix.pkg-type }}" = "deb" ]; then
+              fpm -s dir -t deb -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
+                  -d "libwayland-client0" -d "libcairo2" -d "libpangocairo-1.0-0" -C dist .
+            elif [ "${{ matrix.pkg-type }}" = "rpm" ]; then
+              fpm -s dir -t rpm -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
+                  -d "wayland" -d "cairo" -d "pango" -C dist .
+            fi
           fi
 
       - name: Upload Artifacts
