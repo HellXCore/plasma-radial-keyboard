@@ -1,147 +1,93 @@
-name: Build and Release
+name: build-packages
 
 on:
   push:
-    tags:
-      - 'v*'
-
-permissions:
-  contents: write
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
-  # Job 1: Сборка универсального архива, DEB и RPM на Ubuntu
-  build-ubuntu-packages:
-    runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.get_version.outputs.version }}
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            wayland-protocols \
-            libwayland-dev \
-            libcairo2-dev \
-            libpango1.0-dev \
-            pkg-config \
-            ruby-dev \
-            rubygems
-
-      - name: Install FPM
-        run: sudo gem install --no-document fpm
-
-      - name: Build and test
-        run: |
-          make all
-          make test
-
-      - name: Prepare installation layout
-        run: |
-          mkdir -p dist/layout
-          make install DESTDIR=dist/layout PREFIX=/usr
-
-      - name: Package Tarball
-        run: |
-          cd dist/layout
-          tar -czf ../../plasma-radial-keyboard-linux-amd64.tar.gz ./*
-
-      - name: Package DEB
-        run: |
-          fpm -s dir -t deb -n plasma-radial-keyboard -v "${{ steps.get_version.outputs.version }}" \
-            -C dist/layout -p plasma-radial-keyboard.deb --description "Radial virtual keyboard for Wayland" \
-            -d "libwayland-client0" -d "libcairo2" -d "libpangocairo-1.0-0"
-
-      - name: Package RPM
-        run: |
-          fpm -s dir -t rpm -n plasma-radial-keyboard -v "${{ steps.get_version.outputs.version }}" \
-            -C dist/layout -p plasma-radial-keyboard.rpm --description "Radial virtual keyboard for Wayland" \
-            -d "wayland" -d "cairo" -d "pango"
-
-      - name: Upload Ubuntu artifacts temporarily
-        uses: actions/upload-artifact@v4
-        with:
-          name: ubuntu-artifacts
-          path: |
-            plasma-radial-keyboard-linux-amd64.tar.gz
-            plasma-radial-keyboard.deb
-            plasma-radial-keyboard.rpm
-
-  # Job 2: Сборка .pkg.tar.zst в контейнере Arch Linux
-  build-arch-package:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Контейнер для Ubuntu/Debian
+          - os-name: debian-ubuntu
+            image: ubuntu:24.04
+            pkg-type: deb
+            setup-cmd: |
+              apt-get update && apt-get install -y \
+                ruby ruby-dev rubygems build-essential gcc make pkg-config \
+                libwayland-dev wayland-protocols libcairo2-dev libpango1.0-dev
+              gem install --no-document fpm
+
+          # Контейнер для Fedora
+          - os-name: fedora
+            image: fedora:40
+            pkg-type: rpm
+            setup-cmd: |
+              dnf install -y \
+                ruby ruby-devel gcc make pkg-config rpm-build \
+                wayland-devel wayland-protocols-devel cairo-devel pango-devel
+              gem install --no-document fpm
+
+          # Контейнер для Arch Linux
+          - os-name: archlinux
+            image: archlinux:latest
+            pkg-type: pacman
+            setup-cmd: |
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm \
+                ruby gcc make pkgconf git binutils \
+                wayland wayland-protocols cairo pango
+              gem install --no-document fpm
+
     container:
-      image: archlinux:latest
+      image: ${{ matrix.image }}
+
     steps:
-      - name: Checkout source code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build tools in Arch
-        run: |
-          pacman -Syu --noconfirm
-          # makepkg требует base-devel, но мы ставим только нужное + зависимости вашего приложения
-          pacman -S --noconfirm base-devel git wayland-protocols wayland cairo pango pkgconf
+      - name: Install dependencies and FPM
+        run: ${{ matrix.setup-cmd }}
 
-      - name: Configure Arch packaging environment
+      - name: Compile and Build Package
         run: |
-          # makepkg запрещено запускать от имени root, создаем пользователя 'build'
-          useradd -m build
-          echo "build ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-          # Разрешаем пользователю build читать/писать в текущую папку проекта
-          chown -R build:build .
+          # В некоторых контейнерах ruby ставит fpm в домашнюю директорию или в /usr/local/bin
+          export PATH=$PATH:$(ruby -e 'print Gem.user_dir')/bin:/usr/local/bin
+          
+          PKG_NAME="plasma-radial-keyboard"
+          PKG_VERSION="1.0.0"
+          PKG_RELEASE="1"
+          
+          # Компиляция
+          make
+          
+          # Подготовка директории установки
+          mkdir -p dist
+          make install DESTDIR=$(pwd)/dist PREFIX=/usr
+          
+          # Сборка конкретного типа пакета
+          if [ "${{ matrix.pkg-type }}" = "deb" ]; then
+            fpm -s dir -t deb -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
+                -d "libwayland-client0" -d "libcairo2" -d "libpangocairo-1.0-0" -C dist .
+          
+          elif [ "${{ matrix.pkg-type }}" = "rpm" ]; then
+            fpm -s dir -t rpm -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
+                -d "wayland" -d "cairo" -d "pango" -C dist .
+          
+          elif [ "${{ matrix.pkg-type }}" = "pacman" ]; then
+            fpm -s dir -t pacman -n "$PKG_NAME" -v "$PKG_VERSION" --iteration "$PKG_RELEASE" \
+                -d "wayland" -d "cairo" -d "pango" -C dist .
+          fi
 
-      - name: Update PKGBUILD version and build package
-        shell: bash
-        run: |
-          # Вытаскиваем версию из тега (например, 1.0.0)
-          VERSION="${GITHUB_REF_NAME#v}"
-          
-          # Подменяем версию в файле PKGBUILD на актуальную
-          sed -i "s/pkgver=.*/pkgver=${VERSION}/" PKGBUILD
-          
-          # Архивируем текущие исходники, так как PKGBUILD в секции source ссылается на архив
-          # И симулируем скачивание, чтобы makepkg взял локальный срез кода
-          tar -czf "plasma-radial-keyboard-${VERSION}.tar.gz" --exclude="plasma-radial-keyboard-${VERSION}.tar.gz" .
-          
-          # Запускаем сборку от пользователя 'build'
-          # -s автоматически ставит зависимости, -f принудительно перезаписывает
-          sudo -u build makepkg -sf --noconfirm
-
-      - name: Rename and upload Arch artifact temporarily
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: arch-artifact
-          path: "*.pkg.tar.zst"
-
-  # Job 3: Сбор всех артефактов и публикация в GitHub Releases
-  publish-release:
-    needs: [build-ubuntu-packages, build-arch-package]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Ubuntu artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ubuntu-artifacts
-
-      - name: Download Arch artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: arch-artifact
-
-      - name: Create GitHub Release and Upload Assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            plasma-radial-keyboard-linux-amd64.tar.gz
-            plasma-radial-keyboard.deb
-            plasma-radial-keyboard.rpm
+          name: packages-${{ matrix.os-name }}
+          path: |
+            *.deb
+            *.rpm
             *.pkg.tar.zst
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
