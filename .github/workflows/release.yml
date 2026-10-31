@@ -108,7 +108,8 @@ jobs:
             sed -i "s/^pkgver=.*/pkgver=${PKG_VERSION}/" PKGBUILD
             sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
             sed -i "s|^source=.*|source=(\"\${pkgname}-\${pkgver}.tar.gz\")|" PKGBUILD
-
+            grep -q '^options=' PKGBUILD || sed -i "/^pkgdesc=/a options=('!debug')" PKGBUILD
+            
             chown -R builder:builder "$BUILD_DIR"
             sudo -u builder makepkg -sf --noconfirm
 
