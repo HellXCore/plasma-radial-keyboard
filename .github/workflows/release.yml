@@ -43,11 +43,10 @@ jobs:
             setup-cmd: |
               pacman -Syu --noconfirm
               pacman -S --noconfirm \
-                gcc make pkgconf git binutils sudo \
+                gcc make pkgconf git binutils sudo fakeroot \
                 wayland wayland-protocols cairo pango
               useradd -m builder
               echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-              chown -R builder:builder .
 
     container:
       image: ${{ matrix.image }}
@@ -81,24 +80,32 @@ jobs:
         run: |
           mkdir -p ../packages_out
 
-          # Если это Arch Linux, собираем через родной makepkg
+          # If it’s Arch Linux, build it using the native makepkg.
           if [ "${{ matrix.pkg-type }}" = "pacman" ]; then
-            # Подменяем версию и релиз в файле PKGBUILD на актуальные из CI
-            sed -i "s/^pkgver=.*/pkgver=${PKG_VERSION}/" PKGBUILD
-            sed -i "s/^pkgrel=.*/pkgrel=${PKG_RELEASE}/" PKGBUILD
-            
-            # Архивируем исходники БЕЗОПАСНО: создаем архив уровнем выше, чтобы tar не читал сам себя
-            tar -czf "../plasma-radial-keyboard-${PKG_VERSION}.tar.gz" --exclude=".git" .
-            mv "../plasma-radial-keyboard-${PKG_VERSION}.tar.gz" .
-            
-            # Разрешаем пользователю builder читать эту директорию
-            chown -R builder:builder .
+            SRC="$GITHUB_WORKSPACE"
+            NAME="plasma-radial-keyboard-${PKG_VERSION}"
+            BUILD_DIR=/home/builder/pkgbuild
 
-            # Запускаем сборку через makepkg от пользователя builder
-            # -s автоматически ставит зависимости (если бы они были нужны), -f принудительно перезаписывает
-            sudo -E -u builder makepkg -sf --noconfirm
+            # Assemble the archive in a separate directory, outside the repository,
+            # ensuring it includes a top-level folder named plasma-radial-keyboard-<version>/
+            mkdir -p "$BUILD_DIR/stage"
+            cp -a "$SRC" "$BUILD_DIR/stage/$NAME"
+            rm -rf "$BUILD_DIR/stage/$NAME/.git"
+            tar -czf "$BUILD_DIR/$NAME.tar.gz" -C "$BUILD_DIR/stage" "$NAME"
+
+            # PPKGBUILD: version, valid pkgrel, and a local source instead of a URL
+            cp PKGBUILD "$BUILD_DIR/"
+            cd "$BUILD_DIR"
+            sed -i "s/^pkgver=.*/pkgver=${PKG_VERSION}/" PKGBUILD
+            sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+            sed -i "s|^source=.*|source=(\"\${pkgname}-\${pkgver}.tar.gz\")|" PKGBUILD
+
+            chown -R builder:builder "$BUILD_DIR"
+            sudo -u builder makepkg -sf --noconfirm
+
+            cp "$BUILD_DIR"/*.pkg.tar.zst "$SRC/"
           else
-            # Стандартная логика для Ubuntu и Fedora (под root через FPM)
+            # Standard logic for Ubuntu and Fedora (as root via FPM)
             export PATH=$PATH:$(ruby -e 'print Gem.user_dir')/bin:/usr/local/bin
             PKG_NAME="plasma-radial-keyboard"
             make
