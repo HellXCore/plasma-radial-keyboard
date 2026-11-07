@@ -117,22 +117,42 @@ Settings are stored in:
 * Main config: ~/.config/radialkb/config.ini
 * Custom layouts: ~/.config/radialkb/layouts.conf
 
-#### Example custom configuration *config.ini*:
+#### Example custom configuration:
+
+<details>
+<summary>config.ini</summary>
+
 ```ini
+; ==============================================================================
+;                   ON-SCREEN KEYBOARD CONFIGURATION
+; ==============================================================================
+
 [general]
-# Options:
-# - smart:  opens automatically on focus if a gamepad is connected
-# - manual: opens only via shortcut / chord
-# - auto:   follows KWin's VirtualKeyboardMode setting
+# [RU] Режимы вызова экранной клавиатуры:
+# smart  - клавиатура автоматически открывается при наличии фокуса в поле ввода
+#          (если подключен геймпад). При ручном скрытии (кнопка hide) не показывается повторно,
+#          пока не нажат хоткей show или не сменится фокус поля (рекомендуется).
+# manual - открытие СТРОГО по хоткею show (по умолчанию Select+Start).
+# auto   - полное следование системной настройке Plasma VirtualKeyboardMode.
+# [EN] On-screen keyboard invocation modes:
+# smart  - the keyboard opens automatically when an input field gains focus
+#          (provided a gamepad is connected). If hidden manually (using the 'hide' button),
+#          it will not reappear until the 'show' hotkey is pressed or the input field
+#          focus changes (recommended).
+# manual - the keyboard opens STRICTLY via the 'show' hotkey (default: Select+Start).
+# auto   - follows the system-wide 'Plasma VirtualKeyboardMode' setting.
 invoke = smart
 
-# Toggle combo (single button or combination)
+# [RU] Комбинация или кнопка для принудительного открытия клавиатуры
+# [EN] Key combination or button to force the keyboard to open
+# Доступные/Available: select+start, lb+rb, l3+r3, guide
 show = select+start
 
-# Layout file name (inside ~/.config/radialkb/) or absolute path
-layout = layouts.conf
 
 [controls]
+# [RU] Назначение кнопок геймпада (можно указывать несколько через запятую)
+# [EN] Gamepad button assignments (multiple can be specified, separated by commas)
+# Доступные/Available: a, b, x, y, lb, rb, lt, rt, l3, r3, select, start, guide
 backspace = b, lb
 space = x, y, rb
 enter = a, start
@@ -141,28 +161,60 @@ symbols = l3
 layout_switch = r3
 hide = select
 
+
 [ui]
-scale = 1.0
-font_scale = 1.0
+# [RU] Масштаб интерфейса (1.0 = 100%, 1.25 = 125%, 1.5 = 150%)
+# [EN] Interface scale (1.0 = 100%, 1.25 = 125%, 1.5 = 150%)
+scale = 1.4
+
+# [RU] Масштаб шрифтов и семейство | [EN] Font scale and family
+font_scale = 1.1
 font_family = Noto Sans
-# Custom dimensions (0 = auto-calculated based on scale)
-# width = 1100
-# height = 500
+
+# [RU] Размеры окна в пикселях (0 = авторасчёт от scale)
+# [EN] Window dimensions in pixels (0 = auto-calculate based on scale)
+width = 1280
+height = 480
+
 
 [theme]
-# solid, translucent, or acrylic
+# [RU] Стиль фона:
+# [EN] Background style:
+# acrylic     - премиальный полупрозрачный акрил Plasma 6 (матовое стекло + highlight-контур)
+# solid       - сплошной цвет окна Plasma Breeze
+# translucent - простая полупрозрачность
 background_style = acrylic
-background_opacity = 0.85
-corner_radius = 18.0
-# accent_color = #3daee9 # or "auto" to pull from KDE
+
+# [RU] Непрозрачность фона (от 0.2 до 1.0) | [EN] Background opacity (from 0.2 to 1.0)
+background_opacity = 0.7
+
+# [RU] Радиус скругления углов панели | [EN] Panel corner radius
+corner_radius = 18
+
+# [RU] Цветовой акцент:
+# auto - автоматически брать системный "Цвет выделения" (AccentColor) из Plasma 6
+# Либо явный цвет (#3daee9 или 61,174,233)
+# [EN] Accent color:
+# auto - automatically use the system "Accent Color" from Plasma 6
+# Or a specific color (#3daee9 or 61,174,233)
+accent_color = auto
 ```
 
-#### Example custom layouts *layouts.conf*:
+</details>
+
+#### Example custom layouts:
+
+<details>
+<summary>layouts.conf</summary>
+
 ```ini
 [en]
 lower: a b c d | e f g h | i j k l | m n o p | q r s t | u v w x | y z @ # | . , ? ! ' - : ;
 sym: 1 2 3 4 | 5 6 7 8 | 9 0 - + | ( ) [ ] { } < > | @ # $ % ^ & * ~ | = / \ <bar> <us> ` " ' | . , ? ! : ; … € | € £ ¥ § © ° • №
 ```
+
+</details>
+
 Special escape tokens:
 * ```<bar>```: pipe character (|)
 * ```<us>```: underscore (_)

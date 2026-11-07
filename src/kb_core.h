@@ -204,8 +204,8 @@ static inline int64_t now_ms(void)
 enum { ST_NONE = 0, ST_CHANGED, ST_RELEASED };
 typedef struct { float peak; int sel; int active; } Stick;
 
-/* Минимальный сдвиг стика, ради которого стоит перерисовывать кадр (шум АЦП игнорируем) */
-#define STICK_REDRAW_EPS 0.02f
+/* Minimum stick displacement that warrants a frame redraw (ignoring ADC noise) */
+#define STICK_REDRAW_EPS 0.03f
 
 static inline int sector_of(float x, float y)
 {
@@ -296,9 +296,9 @@ static int pad_set_grab_safe(Pad *p, int grab)
             p->grab_pending = 0;
             return 1;
         }
-        /* Захват не удался (EBUSY — устройство держит Steam/эмулятор). Сбрасываем
-           pending, чтобы не повторять ioctl на каждый пакет событий; следующая
-           попытка — при очередном показе панели. Предупреждение — один раз. */
+        /* Capture failed (EBUSY — device held by Steam/emulator). Reset
+           'pending' to avoid repeating the ioctl for every event packet; the next
+           attempt will occur when the panel is shown again. Issue a warning only once. */
         p->grab_pending = 0;
         if (errno == EBUSY && !p->grab_warned) {
             p->grab_warned = 1;
@@ -331,15 +331,17 @@ static inline int input_armed_strict(int panel_shown, int mapped, int im_active)
     return panel_shown && mapped && im_active;
 }
 
-/* Аккорд вызова клавиатуры (например Select+Start).
-   Кнопки аккорда не действуют на нажатие: если за время удержания партнёр так и
-   не был нажат, при отпускании кнопка считается обычным тапом (CHORD_TAP).
-   Это убирает конфликт, когда кнопка аккорда одновременно назначена на hide/enter. */
+/* Keyboard-triggering chord (e.g., Select+Start).
+   The buttons that make up the chord do not trigger an action upon being pressed:
+   if no other button (the "partner") is pressed while the initial button is held,
+   releasing it will register as a standard tap (CHORD_TAP).
+   This prevents conflicts in cases where a chord-triggering button is also
+   assigned to a function like "hide" or "enter." */
 typedef struct {
-    int a, b;            /* коды кнопок; b < 0 — одиночная кнопка */
+    int a, b;            /* button codes; b < 0 — single button */
     int held_a, held_b;
-    int fired;           /* аккорд уже сработал в текущем удержании */
-    int pending;         /* бит 1/2: кнопка нажата и пока может оказаться тапом */
+    int fired;           /* the chord has already triggered within the current hold */
+    int pending;         /* bit 1/2: button is pressed and could still turn out to be a tap */
 } Chord;
 
 enum { CHORD_PASS = 0, CHORD_SWALLOW, CHORD_FIRE, CHORD_TAP };
@@ -350,7 +352,7 @@ static int chord_event(Chord *c, int code, int value)
 {
     int is_a = (code == c->a), is_b = (c->b >= 0 && code == c->b);
     if (!is_a && !is_b) return CHORD_PASS;
-    if (c->b < 0) {                       /* одиночная кнопка: срабатывает на нажатие */
+    if (c->b < 0) {                       /* single button: triggers on press */
         if (value == 1 && !c->fired) { c->fired = 1; return CHORD_FIRE; }
         if (value == 0) c->fired = 0;
         return CHORD_SWALLOW;
@@ -360,7 +362,7 @@ static int chord_event(Chord *c, int code, int value)
         if (is_a) c->held_a = 1; else c->held_b = 1;
         c->pending |= bit;
         if (c->held_a && c->held_b) {
-            c->pending = 0;               /* это аккорд, а не тап */
+            c->pending = 0;               /* this is a chord, not a tap */
             if (!c->fired) { c->fired = 1; return CHORD_FIRE; }
         }
         return CHORD_SWALLOW;
@@ -372,7 +374,7 @@ static int chord_event(Chord *c, int code, int value)
         if (!c->held_a && !c->held_b) c->fired = 0;
         return tap ? CHORD_TAP : CHORD_SWALLOW;
     }
-    return CHORD_SWALLOW;                 /* автоповтор (value == 2) */
+    return CHORD_SWALLOW;                 /* auto-repeat (value == 2) */
 }
 
 static inline int tbit(const unsigned long *a, int b)
@@ -456,8 +458,8 @@ typedef struct Kb {
     float lx, ly, rx, ry;
     int hat[2];
     int dirty, hide;
-    float ref[4];            /* положение стиков (lx, ly, rx, ry) на момент последней перерисовки */
-    uint32_t held; int held_n; int64_t rep_at;   /* held_n: сколько кнопок удерживают held */
+    float ref[4];            /* stick positions (lx, ly, rx, ry) at the time of the last redraw */
+    uint32_t held; int held_n; int64_t rep_at;   /* held_n: number of buttons currently being held */
     char last[TOKLEN];
     KeyBinds binds;
     void *ud;
@@ -493,7 +495,7 @@ static void kb_hold(Kb *k, uint32_t sym, int down)
         k->held_n = (k->held == sym) ? k->held_n + 1 : 1;
         k->key(k->ud, sym); k->held = sym; k->rep_at = now_ms() + 400;
     } else if (k->held == sym && --k->held_n <= 0) {
-        /* автоповтор останавливаем, только когда отпущены ВСЕ кнопки с этим действием */
+        /* we stop the auto-repeat only when ALL buttons associated with this action have been released */
         k->held = 0; k->held_n = 0;
     }
 }
@@ -565,7 +567,7 @@ static void kb_abs(Kb *k, const Pad *p, int code, int v)
             *dst = pad_norm(p, code, v);
             int st = stick_update(&k->L, k->lx, k->ly);
             if (st == ST_CHANGED) k->group = k->L.sel;
-            /* перерисовка — при смене состояния или заметном сдвиге, но не от шума в покое */
+            /* redraw — upon a state change or a noticeable shift, but not due to noise while at rest */
             if (st != ST_NONE || fabsf(*dst - *ref) > STICK_REDRAW_EPS) { k->dirty = 1; *ref = *dst; }
             return;
         }

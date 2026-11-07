@@ -213,7 +213,7 @@ typedef struct {
     struct org_kde_kwin_blur_manager *kde_blur_mgr;
     struct org_kde_kwin_blur *kde_blur;
     int blur_applied;
-    int blur_w, blur_h;                  /* логический размер, для которого задан регион */
+    int blur_w, blur_h;                  /* logical size for which the region is defined */
     int scale, buf_scale;
     Buf bufs[2]; int bw, bh;
     int field_active;
@@ -228,8 +228,8 @@ typedef struct {
     Kb kb; Pad pads[MAXPADS]; int npads;
     int grab_pref; volatile sig_atomic_t running;
     int64_t last_draw;
-    struct wl_callback *frame_cb;        /* ожидающий callback первого кадра */
-    int64_t map_deadline;                /* запасной срок, если callback не придёт */
+    struct wl_callback *frame_cb;        /* callback awaiting the first frame */
+    int64_t map_deadline;                /* fallback timeout, in case the callback doesn't arrive */
     int plasma_mode;
     int invoke;
     int user_shown;
@@ -246,7 +246,7 @@ typedef struct {
     char layout_path[PATH_MAX + 256];
     char kwinrc[PATH_MAX + 64];
     char kdeglobals[PATH_MAX + 64];
-    int cli_invoke;                      /* -1, если режим не задан в командной строке/окружении */
+    int cli_invoke;                      /* -1 if the mode is not specified in the command line or environment */
     char cli_layout[PATH_MAX + 256];     /* --layout FILE */
     int cfg_has_error;
     char cfg_err_msg[256];
@@ -311,8 +311,8 @@ static char *trim_whitespace(char *str)
     return str;
 }
 
-/* Комментарий — только строка, начинающаяся с '#' или ';'. Нельзя резать по '#'
-   внутри строки: иначе `accent_color = #3daee9` превращается в пустое значение. */
+/* A comment is defined solely as a line beginning with '#' or ';'. Do not split at a '#'
+   character found within a string; otherwise, `accent_color = #3daee9` would end up as an empty value. */
 static void strip_comment(char *s)
 {
     char *p = s;
@@ -351,9 +351,9 @@ static int parse_rgb(const char *s, double *o)
     return 1;
 }
 
-/* Кеш файлов конфигурации: за один проход перезагрузки каждый файл читается
-   с диска один раз, а не по fopen()+разбору на каждый ключ (их ~30). Сбрасывается
-   в начале каждой перезагрузки (plasma_mode_load). */
+/* Configuration file cache: during a single reload pass, each file is read
+   from disk only once, rather than via fopen() plus parsing for every individual key
+   (of which there are ~30). It is cleared at the start of each reload (plasma_mode_load). */
 #define INI_CACHE_N 4
 static struct { char path[PATH_MAX + 64]; char *data; int valid; } ini_cache[INI_CACHE_N];
 
@@ -366,7 +366,7 @@ static void ini_cache_flush(void)
     }
 }
 
-/* Возвращает содержимое файла или NULL (отсутствие файла тоже кешируется) */
+/* Returns the file content or NULL (the absence of a file is also cached) */
 static const char *ini_cache_load(const char *path)
 {
     int slot = -1;
@@ -601,7 +601,7 @@ static int parse_combo(const char *spec, int *a, int *b)
     return (x > 0 && y > 0);
 }
 
-/* Параметры командной строки/окружения важнее config.ini, в том числе после hot-reload */
+/* Command-line/environment parameters take precedence over config.ini, including after a hot-reload */
 static void apply_cli_overrides(App *a, char *layout_path, size_t n)
 {
     if (a->cli_invoke >= 0) a->invoke = a->cli_invoke;
@@ -614,8 +614,8 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     snprintf(path, sizeof path, "%s/radialkb/config.ini", a->cfg_dir);
     char v[128];
 
-    /* Сброс к значениям по умолчанию: ключ, удалённый из config.ini, должен
-       возвращать дефолт, а не оставлять значение прошлой загрузки. */
+    /* Reset to default values: a key removed from config.ini should
+       revert to its default, rather than retaining the value from the previous load. */
     a->invoke = INVOKE_SMART;
     a->chord.a = BTN_SELECT; a->chord.b = BTN_START;
     snprintf(layout_path, n, "%s/radialkb/layouts.conf", a->cfg_dir);
@@ -623,8 +623,8 @@ static void radial_config_load(App *a, char *layout_path, size_t n)
     a->ui.ui_scale = 1.0;
     a->ui.font_scale = 1.0;
     snprintf(a->ui.font_family, sizeof a->ui.font_family, "Noto Sans");
-    /* Размеры по умолчанию задаём ДО раннего return: без config.ini они иначе
-       оставались 0, и буфер 0x0 не создавался (панель не показывалась). */
+    /* We set the default dimensions BEFORE the early return; otherwise, in the absence of config.ini, 
+       they would remain 0, and a 0x0 buffer would not be created (meaning the panel wouldn't be displayed). */
     a->ui.base_w = DEFAULT_LW;
     a->ui.base_h = DEFAULT_LH;
     binds_set_defaults(&a->kb.binds);
@@ -721,7 +721,7 @@ static void update_surface_blur(App *a)
     if (!a->surf || !a->comp) return;
 
     int want_blur = (a->th.bg_style == BG_ACRYLIC && a->visible);
-    /* Регион надо задавать заново и при смене размера панели (hot-reload) */
+    /* The region must be redefined whenever the panel size changes (hot-reload) */
     int resized = want_blur && a->blur_applied &&
                   (a->blur_w != a->ui.base_w || a->blur_h != a->ui.base_h);
     if (want_blur == a->blur_applied && !resized) return;
@@ -824,8 +824,8 @@ static int buf_create(App *a, Buf *b, int w, int h)
 static void cairo_rgba(cairo_t *cr, const double *c)
 { cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]); }
 
-/* Описание шрифта собирается один раз на семейство; здесь только копия с нужным
-   размером (без разбора строки pango_font_description_from_string на каждый текст) */
+/* The font description is constructed once per family; here, we only have a copy
+   with the required size (avoiding the need to parse a string via pango_font_description_from_string for every piece of text) */
 static PangoFontDescription *font_make(App *a, int bold, double px_size)
 {
     if (strcmp(a->fd_family, a->ui.font_family) != 0) {
@@ -860,7 +860,7 @@ static void text_c(cairo_t *cr, App *a, const char *s, double x, double y, doubl
     cairo_new_path(cr);
 }
 
-/* Выравнивание одиночных символов и знаков пунктуации по чернильным границам (Optical Center) */
+/* Alignment of individual characters and punctuation marks based on ink boundaries (Optical Center) */
 static void draw_optical_text(cairo_t *cr, App *a, const char *s, double cx, double cy,
                               double pt_size, const double *col, int bold, int optical_center)
 {
@@ -923,8 +923,8 @@ static void sector_pos(double cx, double cy, double r, int sector, double *x, do
     *x = cx + r * sin(th); *y = cy - r * cos(th);
 }
 
-/* Рисует «пилюлю» с названием кнопки и подписью. При measure=1 только измеряет.
-   Возвращает полную ширину (пилюля + подпись), чтобы ряд можно было выложить без наложений. */
+/* Draws a shape containing a button label and a caption. If measure=1, it only performs measurements.
+   Returns the total width (pill + caption) so that the row can be laid out without overlaps. */
 static double draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *desc,
                               double x, double y, double h, int measure)
 {
@@ -982,7 +982,7 @@ static double draw_pill_badge(cairo_t *cr, App *a, const char *key, const char *
     return total;
 }
 
-/* Подписи кнопок — те же имена, что принимает map_btn_name() в config.ini */
+/* Button labels are the same names that map_btn_name() accepts in config.ini */
 static const char *btn_label(int code)
 {
     switch (code) {
@@ -1001,7 +1001,7 @@ static const char *bind_label(const int *arr, int n) { return n > 0 ? btn_label(
 
 typedef struct { const char *key, *desc; } Badge;
 
-/* Ряд подсказок по центру: ширина считается заранее, поэтому длинные имена не налезают друг на друга */
+/* A series of hints centered: the width is calculated in advance, so long names do not overlap */
 static void draw_badge_row(cairo_t *cr, App *a, const Badge *b, int n, double lw, double y, double h)
 {
     double gap = 18.0 * a->ui.ui_scale, total = 0;
@@ -1049,7 +1049,7 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
             cairo_stroke(cr);
         }
 
-        /* Оптимальный оптический радиус в широкой части сектора */
+        /* Optimal optical radius in the wide part of the sector */
         double r_text = r0 + (R - r0) * 0.54;
         double x, y; sector_pos(cx, cy, r_text, s, &x, &y);
         const double *text_col = hot ? th->accent_fg : th->fg;
@@ -1086,7 +1086,7 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
                     int tw, th_h; pango_layout_get_pixel_size(tl, &tw, &th_h);
                     pango_font_description_free(tfd); g_object_unref(tl);
 
-                    if (tw <= maxw * 0.95) {   /* maxw уже в масштабированных пикселях */
+                    if (tw <= maxw * 0.95) {   /* maxw is already in scaled pixels */
                         snprintf(line1, sizeof(line1), "%s", test_line);
                     } else {
                         snprintf(line1, sizeof(line1), "%s  %s", tokens[0], tokens[1]);
@@ -1146,20 +1146,20 @@ static void draw_ring(cairo_t *cr, App *a, double cx, double cy, double R, doubl
         }
     }
 
-    /* Углубление хаба стика */
+    /* Stick hub recess */
     cairo_new_path(cr);
     cairo_arc(cr, cx, cy, r0 - 6.0 * a->ui.ui_scale, 0, 2 * M_PI);
     cairo_rgba(cr, th->hub); cairo_fill_preserve(cr);
     cairo_rgba(cr, th->border); cairo_set_line_width(cr, 1.2 * a->ui.ui_scale); cairo_stroke(cr);
 
-    /* Мёртвая зона */
+    /* Dead Zone */
     cairo_new_path(cr);
     cairo_arc(cr, cx, cy, (r0 - 6.0 * a->ui.ui_scale) * 0.35, 0, 2 * M_PI);
     cairo_set_source_rgba(cr, th->fg[0], th->fg[1], th->fg[2], 0.08);
     cairo_set_line_width(cr, 1.0 * a->ui.ui_scale);
     cairo_stroke(cr);
 
-    /* Стик */
+    /* Stick */
     double sx = is_left ? k->lx : k->rx;
     double sy = is_left ? k->ly : k->ry;
     double max_travel = r0 - 18.0 * a->ui.ui_scale;
@@ -1267,7 +1267,7 @@ static void draw(App *a, cairo_t *cr)
         cairo_fill(cr);
     }
 
-    /* Центральная статусная плашка */
+    /* Central status bar */
     double card_w = 200.0 * a->ui.ui_scale;
     double card_h = 78.0 * a->ui.ui_scale;
     double card_x = lw / 2.0 - card_w / 2.0;
@@ -1404,7 +1404,7 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time)
 
 static const struct wl_callback_listener frame_listener = { frame_done };
 
-/* Есть ли свободный SHM-буфер (иначе рисовать нечем — ждём wl_buffer.release) */
+/* Is there an available SHM buffer? (Otherwise, there’s nothing to draw with — we must wait for wl_buffer.release) */
 static inline int has_free_buf(const App *a)
 {
     for (int i = 0; i < 2; i++)
@@ -1427,8 +1427,8 @@ static void app_redraw(App *a)
         wl_surface_set_buffer_scale(a->surf, a->scale); a->buf_scale = a->scale;
     }
 
-    /* frame-callback нужен только чтобы узнать, что панель показана (mapped).
-       Если композитор его не пришлёт, map_deadline в главном цикле подстрахует. */
+    /* The frame-callback is only needed to determine that the panel has been shown (mapped).
+       If the compositor fails to send it, map_deadline in the main loop will serve as a fallback. */
     if (!a->mapped && !a->frame_cb) {
         a->frame_cb = wl_surface_frame(a->surf);
         wl_callback_add_listener(a->frame_cb, &frame_listener, a);
@@ -1526,9 +1526,10 @@ static void ctx_surrounding(void *d, struct zwp_input_method_context_v1 *c, cons
         a->surrounding[0] = '\0';
     }
     a->field_active = 1;
-    /* user_hidden здесь НЕ сбрасываем: surrounding_text приходит при каждой правке
-       текста, и панель, скрытая вручную, всплывала бы снова. Сброс — только при
-       смене фокуса (im_activate/im_deactivate) или по хоткею show. */
+    /* We do NOT reset `user_hidden` here: `surrounding_text` is provided with every text edit, 
+       and a panel that had been manually hidden would otherwise pop back up. Resetting 
+       should only occur upon a change in focus (`im_activate`/`im_deactivate`) or via the 
+       'show' hotkey. */
     apply_visibility(a);
 }
 
@@ -1581,9 +1582,9 @@ static void im_activate(void *d, struct zwp_input_method_v1 *im, struct zwp_inpu
     a->user_hidden = 0;
     a->user_shown = 0;
     plasma_mode_load(a);
-    /* pads_resync() здесь не нужен: геймпады уже отслеживаются при старте и по
-       inotify на /dev/input; glob + open() всех event-устройств при каждом фокусе
-       поля — лишняя работа. */
+    /* pads_resync() is not needed here: gamepads are already tracked at startup and via
+       inotify on /dev/input; using glob + open() on all event devices every time
+       a field gains focus is unnecessary work. */
     apply_visibility(a);
 }
 
@@ -1657,9 +1658,9 @@ static void drain_inotify(int fd)
     while (read(fd, buf, sizeof buf) > 0) {}
 }
 
-/* Разбирает события каталога конфигов и возвращает 1, только если затронут
-   файл, который мы реально читаем (иначе любая запись в ~/.config будила бы
-   перезагрузку). Буфер выровнен под struct inotify_event. */
+/* Parses events from the configuration directory and returns 1 only if a file
+   that we actually read is affected (otherwise, any write operation within
+   ~/.config would trigger a reload). The buffer is aligned for struct inotify_event. */
 static int cfg_events_relevant(App *a)
 {
     char buf[INOTIFY_BUFSZ] __attribute__((aligned(__alignof__(struct inotify_event))));
@@ -1691,7 +1692,7 @@ static void setup_cfg_watches(App *a)
         a->ino_cfg = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
         if (a->ino_cfg < 0) return;
     }
-    /* KConfig и большинство редакторов пишут атомарно (rename) — IN_MODIFY/IN_ATTRIB не нужны */
+    /* KConfig and most editors perform writes atomically (using rename) — IN_MODIFY/IN_ATTRIB are not needed */
     uint32_t mask = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE;
     if (a->wd_cfg < 0) {
         a->wd_cfg = inotify_add_watch(a->ino_cfg, a->cfg_dir, mask);
@@ -1799,8 +1800,8 @@ int main(int argc, char **argv)
         int is_armed = input_armed_strict(A.visible, A.mapped, A.ctx != NULL);
         int rep = is_armed ? kb_tick(&A.kb, now) : -1;
         if (rep >= 0) timeout = rep;
-        /* Без свободного буфера таймаут не ставим: poll проснётся по wl_buffer.release
-           через сокет Wayland. Иначе poll(0) превращается в busy-loop на 100% CPU. */
+        /* If there is no free buffer, do not set a timeout: poll will wake up upon receiving wl_buffer.release
+           via the Wayland socket. Otherwise, poll(0) would turn into a busy-loop, consuming 100% CPU. */
         if (A.visible && A.kb.dirty && has_free_buf(&A)) {
             int since = (int)(now - A.last_draw);
             int wait = since >= 16 ? 0 : 16 - since;
@@ -1829,7 +1830,7 @@ int main(int argc, char **argv)
         } else wl_display_cancel_read(A.dpy);
         if (wl_display_dispatch_pending(A.dpy) < 0) break;
 
-        /* callback первого кадра не пришёл — не оставляем клавиатуру навсегда «неактивной» */
+        /* The first-frame callback didn't arrive — we shouldn't leave the keyboard "inactive" forever */
         if (A.visible && !A.mapped && A.map_deadline && now_ms() >= A.map_deadline)
             panel_mark_mapped(&A);
 
@@ -1853,7 +1854,7 @@ int main(int argc, char **argv)
             apply_visibility(&A);
         }
 
-        /* Применение горячей подгрузки конфига после дебаунса */
+        /* Applying hot-reloading of the config after debouncing */
         if (A.cfg_dirty && now_ms() >= A.cfg_reload_at) {
             A.cfg_dirty = 0;
             plasma_mode_load(&A);
@@ -1888,7 +1889,7 @@ int main(int argc, char **argv)
                             int armed = input_armed_strict(A.visible, A.mapped, A.ctx != NULL);
                             int cr = chord_event(&A.chord, ev[e].code, ev[e].value);
                             if (cr == CHORD_FIRE) show_panel(&A);
-                            if (cr == CHORD_TAP && armed) {   /* одиночный тап кнопки аккорда */
+                            if (cr == CHORD_TAP && armed) {   /* single tap on a chord button */
                                 kb_key(&A.kb, ev[e].code, 1);
                                 kb_key(&A.kb, ev[e].code, 0);
                             }
@@ -1922,7 +1923,7 @@ int main(int argc, char **argv)
     if (A.kde_blur) org_kde_kwin_blur_release(A.kde_blur);
     if (A.kde_blur_mgr) org_kde_kwin_blur_manager_destroy(A.kde_blur_mgr);
     if (A.ctx) zwp_input_method_context_v1_destroy(A.ctx);
-    /* Явно освобождаем прокси и буферы до disconnect: сначала роль, потом поверхность */
+    /* Explicitly release proxies and buffers before disconnect: first the role, then the surface */
     if (A.psurf) zwp_input_panel_surface_v1_destroy(A.psurf);
     if (A.surf) wl_surface_destroy(A.surf);
     for (int i = 0; i < 2; i++) buf_destroy(&A.bufs[i]);
