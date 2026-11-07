@@ -1,6 +1,6 @@
 # Maintainer: HellXCore <mechanic.of.core@protonmail.com>
 pkgname=plasma-radial-keyboard
-pkgver=0.1.0
+pkgver=0.1.5
 pkgrel=1
 pkgdesc="Radial virtual keyboard for Wayland"
 arch=('x86_64')

@@ -7,6 +7,9 @@ LDLIBS += $(shell pkg-config --libs $(PKGS)) -lm
 BIN = plasma-radial-keyboard
 PROTO = protocol/input-method-unstable-v1.xml
 
+SRCS = src/main.c src/render.c src/input.c src/config.c src/blur.c src/panel.c
+OBJS = $(patsubst src/%.c, build/%.o, $(SRCS)) build/protocol.o
+
 all: $(BIN)
 
 build/protocol.h: $(PROTO)
@@ -17,12 +20,22 @@ build/protocol.c: $(PROTO)
 	@mkdir -p build
 	wayland-scanner private-code $< $@
 
-$(BIN): src/main.c src/kb_core.h build/protocol.h build/protocol.c
-	$(CC) $(CFLAGS) src/main.c build/protocol.c -o $@ $(LDFLAGS) $(LDLIBS)
+# Assembly of the generated protocol
+build/protocol.o: build/protocol.c build/protocol.h
+	$(CC) $(CFLAGS) -c $< -o $@
 
-test: tests/test_core.c src/kb_core.h
+# Building application modules
+build/%.o: src/%.c src/app.h build/protocol.h
 	@mkdir -p build
-	$(CC) -Wall -Wextra -Isrc tests/test_core.c -o build/test_core -lm
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Linking the binary
+$(BIN): $(OBJS)
+	$(CC) $(OBJS) -o $@ $(LDFLAGS) $(LDLIBS)
+
+test: tests/test_core.c src/input.c src/app.h build/protocol.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) tests/test_core.c src/input.c -o build/test_core $(LDFLAGS) $(LDLIBS)
 	./build/test_core
 
 install: $(BIN)

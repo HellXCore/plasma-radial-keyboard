@@ -1,60 +1,6 @@
-/* kb_core.h - Wayland-independent logic of the dual-stick radial keyboard. */
-#ifndef KB_CORE_H
-#define KB_CORE_H
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <stdint.h>
-#include <time.h>
-#include <wchar.h>
-#include <wctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-#include <linux/input.h>
-
-#define NGROUPS 8
-#define NSLOTS 8
-#define MAXLANG 8
-#define MAXPADS 4
-#define TOKLEN 16
-#define MAX_BINDS 6
-
-enum {
-    PLASMA_VK_NEVER = 0,     /* "Never" */
-    PLASMA_VK_TOUCH = 1,     /* "With Touch and Tablet" */
-    PLASMA_VK_ALWAYS = 2     /* "With Touch, Tablet, and Mouse" */
-};
-
-enum {
-    INVOKE_AUTO = 0,
-    INVOKE_MANUAL = 1,
-    INVOKE_SMART = 2
-};
-
-static const int TOK2SLOT[NSLOTS] = {0, 2, 4, 6, 1, 3, 5, 7};
-
-enum { L_LOWER = 0, L_UPPER = 1, L_SYM = 2 };
-
-typedef struct { char t[NSLOTS][TOKLEN]; } Group;
-typedef struct {
-    char name[16];
-    Group g[3][NGROUPS];
-    int has[3];
-} Layout;
-
-typedef struct {
-    int backspace[MAX_BINDS]; int n_backspace;
-    int space[MAX_BINDS];     int n_space;
-    int enter[MAX_BINDS];     int n_enter;
-    int shift[MAX_BINDS];     int n_shift;
-    int sym[MAX_BINDS];       int n_sym;
-    int layout[MAX_BINDS];    int n_layout;
-    int hide[MAX_BINDS];      int n_hide;
-} KeyBinds;
+#include "app.h"
+#include <ctype.h>
+#include <glob.h>
 
 #define DEFAULT_LAYOUTS \
 "[en]\n" \
@@ -71,7 +17,7 @@ static inline int bind_contains(const int *arr, int n, int code)
     return 0;
 }
 
-static inline void binds_set_defaults(KeyBinds *b)
+void binds_set_defaults(KeyBinds *b)
 {
     b->n_backspace = 2; b->backspace[0] = BTN_EAST; b->backspace[1] = BTN_TL;
     b->n_space = 3;     b->space[0] = BTN_WEST; b->space[1] = BTN_NORTH; b->space[2] = BTN_TR;
@@ -148,7 +94,7 @@ static void parse_layer(const char *s, Group *g)
     }
 }
 
-static int parse_layouts(const char *text, Layout *out, int max)
+int parse_layouts(const char *text, Layout *out, int max)
 {
     int n = 0; Layout *cur = NULL;
     const char *p = text;
@@ -195,17 +141,26 @@ static int parse_layouts(const char *text, Layout *out, int max)
     return n;
 }
 
-static inline int64_t now_ms(void)
+int kb_load_layouts(Kb *k, const char *path)
 {
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    char *buf = NULL;
+    if (path) {
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+            if (sz > 0 && sz < (1 << 20) && (buf = malloc((size_t)sz + 1))) {
+                size_t r = fread(buf, 1, (size_t)sz, f); buf[r] = 0;
+            }
+            fclose(f);
+        }
+    }
+    int old_cur = k->cur;
+    k->nlay = buf ? parse_layouts(buf, k->lay, MAXLANG) : 0;
+    free(buf);
+    if (k->nlay == 0) k->nlay = parse_layouts(DEFAULT_LAYOUTS, k->lay, MAXLANG);
+    k->cur = (old_cur < k->nlay) ? old_cur : 0;
+    return k->nlay;
 }
-
-enum { ST_NONE = 0, ST_CHANGED, ST_RELEASED };
-typedef struct { float peak; int sel; int active; } Stick;
-
-/* Minimum stick displacement that warrants a frame redraw (ignoring ADC noise) */
-#define STICK_REDRAW_EPS 0.03f
 
 static inline int sector_of(float x, float y)
 {
@@ -230,17 +185,6 @@ static int stick_update(Stick *s, float x, float y)
     return ST_NONE;
 }
 
-typedef struct {
-    int fd;
-    int grabbed;
-    int grab_pending;
-    int grab_warned;
-    int mn[ABS_CNT], mx[ABS_CNT];
-    char name[64];
-    char path[64];
-    uint16_t vendor, product;
-} Pad;
-
 static int pad_name_wanted(const char *n)
 {
     if (!n || !*n) return 0;
@@ -262,7 +206,7 @@ static int pad_name_wanted(const char *n)
     return 0;
 }
 
-static int pad_id_wanted(uint16_t vendor, uint16_t product, const char *name)
+int pad_id_wanted(uint16_t vendor, uint16_t product, const char *name)
 {
     (void)product;
     if (vendor == 0x054c) return pad_name_wanted(name);
@@ -271,7 +215,7 @@ static int pad_id_wanted(uint16_t vendor, uint16_t product, const char *name)
     return pad_name_wanted(name);
 }
 
-static int pad_any_key_pressed(int fd)
+int pad_any_key_pressed(int fd)
 {
     if (fd < 0) return 0;
     unsigned long key_states[KEY_MAX / (8 * sizeof(long)) + 1] = {0};
@@ -282,7 +226,7 @@ static int pad_any_key_pressed(int fd)
     return 0;
 }
 
-static int pad_set_grab_safe(Pad *p, int grab)
+int pad_set_grab_safe(Pad *p, int grab)
 {
     if (p->fd < 0) return 0;
     if (grab) {
@@ -296,9 +240,6 @@ static int pad_set_grab_safe(Pad *p, int grab)
             p->grab_pending = 0;
             return 1;
         }
-        /* Capture failed (EBUSY — device held by Steam/emulator). Reset
-           'pending' to avoid repeating the ioctl for every event packet; the next
-           attempt will occur when the panel is shown again. Issue a warning only once. */
         p->grab_pending = 0;
         if (errno == EBUSY && !p->grab_warned) {
             p->grab_warned = 1;
@@ -315,9 +256,8 @@ static int pad_set_grab_safe(Pad *p, int grab)
     return 0;
 }
 
-/* Логика видимости клавиатуры */
-static inline int vis_want(int im_active, int has_pad, int plasma_mode,
-                           int invoke_mode, int user_shown, int user_hidden)
+int vis_want(int im_active, int has_pad, int plasma_mode,
+             int invoke_mode, int user_shown, int user_hidden)
 {
     if (!im_active || !has_pad || user_hidden) return 0;
     if (invoke_mode == INVOKE_MANUAL) return user_shown;
@@ -326,33 +266,21 @@ static inline int vis_want(int im_active, int has_pad, int plasma_mode,
     return 1;
 }
 
-static inline int input_armed_strict(int panel_shown, int mapped, int im_active)
+int input_armed_strict(int panel_shown, int mapped, int im_active)
 {
     return panel_shown && mapped && im_active;
 }
 
-/* Keyboard-triggering chord (e.g., Select+Start).
-   The buttons that make up the chord do not trigger an action upon being pressed:
-   if no other button (the "partner") is pressed while the initial button is held,
-   releasing it will register as a standard tap (CHORD_TAP).
-   This prevents conflicts in cases where a chord-triggering button is also
-   assigned to a function like "hide" or "enter." */
-typedef struct {
-    int a, b;            /* button codes; b < 0 — single button */
-    int held_a, held_b;
-    int fired;           /* the chord has already triggered within the current hold */
-    int pending;         /* bit 1/2: button is pressed and could still turn out to be a tap */
-} Chord;
+void chord_reset(Chord *c)
+{
+    c->held_a = c->held_b = c->fired = c->pending = 0;
+}
 
-enum { CHORD_PASS = 0, CHORD_SWALLOW, CHORD_FIRE, CHORD_TAP };
-
-static inline void chord_reset(Chord *c) { c->held_a = c->held_b = c->fired = c->pending = 0; }
-
-static int chord_event(Chord *c, int code, int value)
+int chord_event(Chord *c, int code, int value)
 {
     int is_a = (code == c->a), is_b = (c->b >= 0 && code == c->b);
     if (!is_a && !is_b) return CHORD_PASS;
-    if (c->b < 0) {                       /* single button: triggers on press */
+    if (c->b < 0) {
         if (value == 1 && !c->fired) { c->fired = 1; return CHORD_FIRE; }
         if (value == 0) c->fired = 0;
         return CHORD_SWALLOW;
@@ -362,7 +290,7 @@ static int chord_event(Chord *c, int code, int value)
         if (is_a) c->held_a = 1; else c->held_b = 1;
         c->pending |= bit;
         if (c->held_a && c->held_b) {
-            c->pending = 0;               /* this is a chord, not a tap */
+            c->pending = 0;
             if (!c->fired) { c->fired = 1; return CHORD_FIRE; }
         }
         return CHORD_SWALLOW;
@@ -374,7 +302,7 @@ static int chord_event(Chord *c, int code, int value)
         if (!c->held_a && !c->held_b) c->fired = 0;
         return tap ? CHORD_TAP : CHORD_SWALLOW;
     }
-    return CHORD_SWALLOW;                 /* auto-repeat (value == 2) */
+    return CHORD_SWALLOW;
 }
 
 static inline int tbit(const unsigned long *a, int b)
@@ -388,7 +316,7 @@ static int pad_has_stick_layout(const unsigned long *ab, const unsigned long *kb
            tbit(ab, ABS_RY) && (tbit(kb, BTN_SOUTH) || tbit(kb, BTN_GAMEPAD));
 }
 
-static int pad_open_at(Pad *p, const char *path, int grab)
+int pad_open_at(Pad *p, const char *path, int grab)
 {
     int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return -1;
@@ -419,7 +347,7 @@ static int pad_open_at(Pad *p, const char *path, int grab)
     return 0;
 }
 
-static void pad_close(Pad *p)
+void pad_close(Pad *p)
 {
     if (p->fd < 0) return;
     if (p->grabbed) ioctl(p->fd, EVIOCGRAB, (void *)0);
@@ -442,32 +370,7 @@ static float pad_norm01(const Pad *p, int code, int v)
     return f < 0 ? 0 : (f > 1 ? 1 : f);
 }
 
-#define SYM_BACKSPACE 0xff08u
-#define SYM_RETURN    0xff0du
-#define SYM_LEFT      0xff51u
-#define SYM_UP        0xff52u
-#define SYM_RIGHT     0xff53u
-#define SYM_DOWN      0xff54u
-#define SYM_SPACE     0x0020u
-
-typedef struct Kb {
-    Layout lay[MAXLANG]; int nlay, cur;
-    int sym, shift, sh_abs, sh_btn, rt_abs, rt_btn, rt_prev;
-    int group;
-    Stick L, R;
-    float lx, ly, rx, ry;
-    int hat[2];
-    int dirty, hide;
-    float ref[4];            /* stick positions (lx, ly, rx, ry) at the time of the last redraw */
-    uint32_t held; int held_n; int64_t rep_at;   /* held_n: number of buttons currently being held */
-    char last[TOKLEN];
-    KeyBinds binds;
-    void *ud;
-    void (*text)(void *ud, const char *utf8);
-    void (*key)(void *ud, uint32_t keysym);
-} Kb;
-
-static void kb_reset_input(Kb *k)
+void kb_reset_input(Kb *k)
 {
     k->L = (Stick){0, -1, 0}; k->R = (Stick){0, -1, 0};
     k->lx = k->ly = k->rx = k->ry = 0;
@@ -476,7 +379,10 @@ static void kb_reset_input(Kb *k)
     k->hat[0] = k->hat[1] = 0; k->held = 0; k->held_n = 0; k->hide = 0; k->dirty = 1;
 }
 
-static inline int kb_layer(const Kb *k) { return k->sym ? L_SYM : (k->shift ? L_UPPER : L_LOWER); }
+int kb_layer(const Kb *k)
+{
+    return k->sym ? L_SYM : (k->shift ? L_UPPER : L_LOWER);
+}
 
 static void kb_commit_slot(Kb *k, int slot)
 {
@@ -495,12 +401,11 @@ static void kb_hold(Kb *k, uint32_t sym, int down)
         k->held_n = (k->held == sym) ? k->held_n + 1 : 1;
         k->key(k->ud, sym); k->held = sym; k->rep_at = now_ms() + 400;
     } else if (k->held == sym && --k->held_n <= 0) {
-        /* we stop the auto-repeat only when ALL buttons associated with this action have been released */
         k->held = 0; k->held_n = 0;
     }
 }
 
-static int kb_tick(Kb *k, int64_t now)
+int kb_tick(Kb *k, int64_t now)
 {
     if (!k->held) return -1;
     if (now >= k->rep_at) { k->key(k->ud, k->held); k->rep_at = now + 45; }
@@ -525,7 +430,7 @@ static void kb_hat(Kb *k, int axis, int v)
     if (sgn) kb_hold(k, sgn < 0 ? neg : pos, 1);
 }
 
-static void kb_key(Kb *k, int code, int v)
+void kb_key(Kb *k, int code, int v)
 {
     int down = (v == 1);
     if (v == 2) return;
@@ -558,7 +463,7 @@ static void kb_key(Kb *k, int code, int v)
     k->dirty = 1;
 }
 
-static void kb_abs(Kb *k, const Pad *p, int code, int v)
+void kb_abs(Kb *k, const Pad *p, int code, int v)
 {
     switch (code) {
         case ABS_X: case ABS_Y: {
@@ -567,7 +472,6 @@ static void kb_abs(Kb *k, const Pad *p, int code, int v)
             *dst = pad_norm(p, code, v);
             int st = stick_update(&k->L, k->lx, k->ly);
             if (st == ST_CHANGED) k->group = k->L.sel;
-            /* redraw — upon a state change or a noticeable shift, but not due to noise while at rest */
             if (st != ST_NONE || fabsf(*dst - *ref) > STICK_REDRAW_EPS) { k->dirty = 1; *ref = *dst; }
             return;
         }
@@ -591,25 +495,152 @@ static void kb_abs(Kb *k, const Pad *p, int code, int v)
     k->dirty = 1;
 }
 
-static int kb_load_layouts(Kb *k, const char *path)
+void pads_apply_grab(App *a)
 {
-    char *buf = NULL;
-    if (path) {
-        FILE *f = fopen(path, "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-            if (sz > 0 && sz < (1 << 20) && (buf = malloc((size_t)sz + 1))) {
-                size_t r = fread(buf, 1, (size_t)sz, f); buf[r] = 0;
-            }
-            fclose(f);
-        }
+    int should_grab = a->grab_pref && input_armed_strict(a->visible, a->mapped, a->ctx != NULL);
+    for (int i = 0; i < a->npads; i++) {
+        pad_set_grab_safe(&a->pads[i], should_grab);
     }
-    int old_cur = k->cur;
-    k->nlay = buf ? parse_layouts(buf, k->lay, MAXLANG) : 0;
-    free(buf);
-    if (k->nlay == 0) k->nlay = parse_layouts(DEFAULT_LAYOUTS, k->lay, MAXLANG);
-    k->cur = (old_cur < k->nlay) ? old_cur : 0;
-    return k->nlay;
 }
 
-#endif
+static int pad_index_by_path(App *a, const char *path)
+{
+    for (int i = 0; i < a->npads; i++) {
+        if (a->pads[i].fd >= 0 && !strcmp(a->pads[i].path, path)) return i;
+    }
+    return -1;
+}
+
+void pads_resync(App *a)
+{
+    glob_t g;
+    int live[MAXPADS] = {0};
+    if (glob("/dev/input/event*", 0, NULL, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc; i++) {
+            int idx = pad_index_by_path(a, g.gl_pathv[i]);
+            if (idx >= 0) { live[idx] = 1; continue; }
+            if (a->npads >= MAXPADS) continue;
+            Pad tmp;
+            if (pad_open_at(&tmp, g.gl_pathv[i], 0) == 0) {
+                a->pads[a->npads] = tmp;
+                live[a->npads] = 1;
+                fprintf(stderr, "radialkb: pad connected: %s (%s %04x:%04x)\n",
+                        tmp.name, tmp.path, tmp.vendor, tmp.product);
+                a->npads++;
+            }
+        }
+        globfree(&g);
+    }
+    for (int i = a->npads - 1; i >= 0; i--) {
+        if (live[i] && a->pads[i].fd >= 0) continue;
+        fprintf(stderr, "radialkb: pad removed: %s\n", a->pads[i].name);
+        pad_close(&a->pads[i]);
+        kb_reset_input(&a->kb);
+        reset_ime_state(a);
+        chord_reset(&a->chord);
+        a->pads[i] = a->pads[a->npads - 1];
+        live[i] = live[a->npads - 1];
+        a->npads--;
+    }
+    pads_apply_grab(a);
+}
+
+void pads_close_all(App *a)
+{
+    for (int i = 0; i < a->npads; i++) pad_close(&a->pads[i]);
+    a->npads = 0;
+    kb_reset_input(&a->kb);
+    reset_ime_state(a);
+}
+
+int map_btn_name(const char *s)
+{
+    if (!strcmp(s, "select") || !strcmp(s, "share") || !strcmp(s, "back")) return BTN_SELECT;
+    if (!strcmp(s, "start") || !strcmp(s, "options") || !strcmp(s, "menu")) return BTN_START;
+    if (!strcmp(s, "l3") || !strcmp(s, "thumbl")) return BTN_THUMBL;
+    if (!strcmp(s, "r3") || !strcmp(s, "thumbr")) return BTN_THUMBR;
+    if (!strcmp(s, "mode") || !strcmp(s, "guide") || !strcmp(s, "ps")) return BTN_MODE;
+    if (!strcmp(s, "lb") || !strcmp(s, "l1")) return BTN_TL;
+    if (!strcmp(s, "rb") || !strcmp(s, "r1")) return BTN_TR;
+    if (!strcmp(s, "lt") || !strcmp(s, "l2")) return BTN_TL2;
+    if (!strcmp(s, "rt") || !strcmp(s, "r2")) return BTN_TR2;
+    if (!strcmp(s, "a") || !strcmp(s, "cross") || !strcmp(s, "south")) return BTN_SOUTH;
+    if (!strcmp(s, "b") || !strcmp(s, "circle") || !strcmp(s, "east")) return BTN_EAST;
+    if (!strcmp(s, "x") || !strcmp(s, "square") || !strcmp(s, "west")) return BTN_WEST;
+    if (!strcmp(s, "y") || !strcmp(s, "triangle") || !strcmp(s, "north")) return BTN_NORTH;
+    return -1;
+}
+
+int parse_btn_list(const char *spec, int *arr, int *cnt)
+{
+    *cnt = 0;
+    if (!spec || !*spec) return 1;
+    char buf[128]; snprintf(buf, sizeof buf, "%s", spec);
+    char *p = buf;
+    int err = 0;
+    while (*p && *cnt < MAX_BINDS) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        char *e = p;
+        while (*e && *e != ',' && *e != ' ' && *e != '\t') {
+            *e = (char)tolower((unsigned char)*e);
+            e++;
+        }
+        char term = *e; *e = 0;
+        int code = map_btn_name(p);
+        if (code > 0) arr[(*cnt)++] = code;
+        else err = 1;
+        if (!term) break;
+        p = e + 1;
+    }
+    return !err;
+}
+
+static char *trim_whitespace(char *str)
+{
+    while (*str == ' ' || *str == '\t' || *str == '\r' || *str == '\n') str++;
+    if (!*str) return str;
+    char *end = str + strlen(str) - 1;
+    while (end > str && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
+        *end = '\0';
+        end--;
+    }
+    return str;
+}
+
+int parse_combo(const char *spec, int *a, int *b)
+{
+    char buf[128]; snprintf(buf, sizeof buf, "%s", spec ? spec : "select+start");
+    for (char *p = buf; *p; p++) *p = (char)tolower((unsigned char)*p);
+    char *plus = strchr(buf, '+');
+    if (!plus) {
+        int x = map_btn_name(trim_whitespace(buf));
+        *a = x > 0 ? x : BTN_SELECT;
+        *b = -1;
+        return (x > 0);
+    }
+    *plus = 0;
+    int x = map_btn_name(trim_whitespace(buf)), y = map_btn_name(trim_whitespace(plus + 1));
+    *a = x > 0 ? x : BTN_SELECT;
+    *b = y > 0 ? y : BTN_START;
+    return (x > 0 && y > 0);
+}
+
+const char *btn_label(int code)
+{
+    switch (code) {
+        case BTN_SOUTH: return "A";   case BTN_EAST:  return "B";
+        case BTN_WEST:  return "X";   case BTN_NORTH: return "Y";
+        case BTN_TL: return "LB";     case BTN_TR: return "RB";
+        case BTN_TL2: return "LT";    case BTN_TR2: return "RT";
+        case BTN_THUMBL: return "L3"; case BTN_THUMBR: return "R3";
+        case BTN_SELECT: return "Select"; case BTN_START: return "Start";
+        case BTN_MODE: return "Guide";
+        default: return "?";
+    }
+}
+
+const char *bind_label(const int *arr, int n)
+{
+    return n > 0 ? btn_label(arr[0]) : "-";
+}

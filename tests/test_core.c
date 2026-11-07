@@ -1,7 +1,12 @@
 #define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
 #include <locale.h>
 #include <assert.h>
-#include "kb_core.h"
+#include "app.h"
+
+/* Stub for IME functions called from input.c during the hot-unplugging of gamepads */
+void reset_ime_state(App *a) { (void)a; }
 
 static char typed[256]; static uint32_t keys[32]; static int nkeys;
 static void t_text(void *u, const char *s) { (void)u; strcat(typed, s); }
@@ -104,7 +109,7 @@ int main(void) {
     assert(!input_armed_strict(1, 1, 0));
     assert( input_armed_strict(1, 1, 1));
 
-    /* Аккорд Select+Start: порядок нажатия не важен, одиночный тап проходит при отпускании */
+    /* Select+Start chord: the order of pressing does not matter; a single tap registers upon release */
     {
         Chord c; memset(&c, 0, sizeof c); c.a = BTN_SELECT; c.b = BTN_START;
         assert(chord_event(&c, BTN_SELECT, 1) == CHORD_SWALLOW);
@@ -112,13 +117,13 @@ int main(void) {
         assert(chord_event(&c, BTN_START,  2) == CHORD_SWALLOW);
         assert(chord_event(&c, BTN_START,  0) == CHORD_SWALLOW);
         assert(chord_event(&c, BTN_SELECT, 0) == CHORD_SWALLOW);
-        assert(chord_event(&c, BTN_START,  1) == CHORD_SWALLOW);   /* Start первым — не Enter */
+        assert(chord_event(&c, BTN_START,  1) == CHORD_SWALLOW);   /* Start with the first item — not Enter */
         assert(chord_event(&c, BTN_SELECT, 1) == CHORD_FIRE);
         assert(chord_event(&c, BTN_SELECT, 0) == CHORD_SWALLOW);
         assert(chord_event(&c, BTN_START,  0) == CHORD_SWALLOW);
-        assert(chord_event(&c, BTN_SELECT, 1) == CHORD_SWALLOW);   /* одиночный тап */
+        assert(chord_event(&c, BTN_SELECT, 1) == CHORD_SWALLOW);   /* single tap */
         assert(chord_event(&c, BTN_SELECT, 0) == CHORD_TAP);
-        assert(chord_event(&c, BTN_SOUTH,  1) == CHORD_PASS);      /* чужая кнопка */
+        assert(chord_event(&c, BTN_SOUTH,  1) == CHORD_PASS);      /* someone else's button */
         Chord s; memset(&s, 0, sizeof s); s.a = BTN_MODE; s.b = -1;
         assert(chord_event(&s, BTN_MODE, 1) == CHORD_FIRE);
         assert(chord_event(&s, BTN_MODE, 1) == CHORD_SWALLOW);
@@ -126,7 +131,7 @@ int main(void) {
         assert(chord_event(&s, BTN_MODE, 1) == CHORD_FIRE);
     }
 
-    /* Неудачный grab не оставляет grab_pending (иначе ioctl на каждый пакет событий) */
+    /* An unsuccessful grab does not leave grab_pending set (otherwise, an ioctl would be triggered for every event packet) */
     {
         Pad pe; memset(&pe, 0, sizeof pe);
         pe.fd = open("/dev/null", O_RDONLY); pe.grab_pending = 1;
@@ -135,7 +140,7 @@ int main(void) {
         close(pe.fd);
     }
 
-    /* Две кнопки на одно действие: повтор идёт, пока зажата хотя бы одна */
+    /* Two buttons for a single action: the action repeats as long as at least one is held down */
     nkeys = 0;
     kb_key(&kb, BTN_EAST, 1); kb_key(&kb, BTN_TL, 1);
     kb_key(&kb, BTN_EAST, 0);
@@ -143,7 +148,7 @@ int main(void) {
     kb_key(&kb, BTN_TL, 0);
     assert(kb.held == 0);
 
-    /* Дрожание стика в покое не должно вызывать перерисовку */
+    /* Stick jitter while at rest should not trigger a redraw */
     kb_reset_input(&kb); kb.dirty = 0;
     left(0.005f, 0.0f); left(0.01f, 0.01f); left(-0.012f, 0.0f);
     assert(!kb.dirty);
@@ -153,7 +158,7 @@ int main(void) {
     assert(!kb.dirty);
     right(1, 0); assert(kb.dirty);
     kb.dirty = 0; right(0, 0);
-    assert(kb.dirty);                 /* отпускание стика всегда перерисовывается */
+    assert(kb.dirty);                 /* releasing the stick always triggers a redraw */
     kb_reset_input(&kb);
 
     puts("all core tests passed");
